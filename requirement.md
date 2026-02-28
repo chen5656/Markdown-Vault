@@ -56,12 +56,24 @@ A **fully decentralized, zero-backend Chrome extension** that lets users send an
 
 ### Content Pipeline (per URL)
 
-1. Fetch the URL (extension bypasses CORS restrictions)
+1. Fetch the URL with `credentials: 'include'` (extension bypasses CORS and shares the browser's cookie jar — handles most cookie-based paywalls automatically); if Readability extracts no meaningful content, fall back to opening a background tab and injecting a content script to read the live DOM
 2. Extract article content with **Mozilla Readability.js**
 3. Convert cleaned HTML to Markdown with **Turndown.js** (GitHub-flavored Markdown)
 4. Write `.md` file to the user's chosen local folder via **File System Access API**
 5. append it to a [YYYY-MM-DD].md file (if file not exist, create it)
 6. Show a Chrome desktop notification confirming the save
+
+### Retry Mechanism
+
+Failed fetches are retried with **exponential backoff** before giving up:
+
+- **Max attempts:** 3 (initial + 2 retries)
+- **Backoff delays:** 30s → 120s → 300s
+- **Retryable errors:** network timeout, connection refused, 5xx server errors
+- **Non-retryable errors:** 404, 403, 401 — fail immediately, save error `.md`
+- **Retry state** is persisted in `chrome.storage.local` so retries survive service worker sleep cycles; each pending retry is stored as `{ url, attempt, next_retry_at }`
+- On each alarm wake, the extension checks for any pending retries whose `next_retry_at` has passed and processes them alongside new messages
+- After all 3 attempts fail, save an error `.md` and notify the user
 
 ### extension ui
 
@@ -162,6 +174,7 @@ When the extension detects it has been offline for 24 hours or more:
   - `last_successful_poll`: ISO timestamp of last successful Telegram API response
   - `last_update_id`: offset for Telegram queue
   - `connection_warnings`: array of past disconnect events (for history view)
+  - `pending_retries`: array of `{ url, attempt, next_retry_at }` for URLs awaiting retry
 
 ### 5.4 Extension Status Indicator
 
@@ -241,10 +254,13 @@ source: telegram
 
 | Scenario | Behavior |
 |----------|----------|
-| URL that fails to fetch (404, timeout) | Save error `.md` with url + error details, notify user |
+| URL that fails to fetch (timeout, 5xx) | Retry up to 3 times with exponential backoff (30s → 120s → 300s); save error `.md` after all attempts fail |
+| URL that fails to fetch (404, 403, 401) | Non-retryable — save error `.md` with url + error details immediately |
 | Page with no extractable article | Save raw converted HTML as fallback |
 | File already exists with same name | Append `-2`, `-3` to avoid overwrite |
 | File System Access permission revoked | Show error in popup, prompt user to re-grant |
 | Telegram token invalid/revoked | Show error badge, prompt user to re-enter token |
 | Offline > 24 hours | Show disconnect warning with exact datetime range and duration |
 | Browser closed | No polling; messages queue on Telegram (up to 24 hours) |
+| Paywalled site (cookie-based auth) | Fetch with `credentials: 'include'` — extension shares the browser's cookie jar, so works automatically if user is logged in on this PC |
+| Paywalled site (JS-rendered / anti-bot) | If Readability extracts no meaningful content from the raw fetch, open the URL in a background tab, wait for full render, inject a content script to run Readability.js on the live DOM, then close the tab |
