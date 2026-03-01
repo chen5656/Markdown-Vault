@@ -237,7 +237,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const w = await testFh.createWritable();
         await w.write('test');
         await w.close();
-        await dirHandle.removeEntry('.save-as-md-test').catch(() => {});
+        await dirHandle.removeEntry('.save-as-md-test').catch(() => { });
       } catch (we) {
         $('folder-msg').textContent = `Write test failed: ${we.message}`;
         $('folder-msg').className = 'field-status error';
@@ -299,7 +299,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       },
     });
 
-    chrome.tabs.create({ url: chrome.runtime.getURL('onboarding.html') });
+    chrome.tabs.create({ url: chrome.runtime.getURL('pages/onboarding/onboarding.html') });
     window.close();
   });
 });

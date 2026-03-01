@@ -18,8 +18,8 @@ function timeAgo(isoString) {
   if (!isoString) return 'Never';
   const diff = Date.now() - new Date(isoString).getTime();
   const secs = Math.floor(diff / 1000);
-  if (secs < 5)   return 'just now';
-  if (secs < 60)  return `${secs}s ago`;
+  if (secs < 5) return 'just now';
+  if (secs < 60) return `${secs}s ago`;
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
   if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
   return `${Math.floor(secs / 86400)}d ago`;
@@ -189,20 +189,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Setup screen: open onboarding
   $('open-onboarding').addEventListener('click', () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL('onboarding.html') });
+    chrome.tabs.create({ url: chrome.runtime.getURL('pages/onboarding/onboarding.html') });
     window.close();
   });
 
   // Permission screen: open settings to re-grant folder access
   $('regrant-permission').addEventListener('click', () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL('settings.html') + '#folder' });
+    chrome.tabs.create({ url: chrome.runtime.getURL('pages/settings/settings.html') + '#folder' });
     window.close();
   });
 
   // Settings link
   $('open-settings').addEventListener('click', e => {
     e.preventDefault();
-    chrome.tabs.create({ url: chrome.runtime.getURL('settings.html') });
+    chrome.tabs.create({ url: chrome.runtime.getURL('pages/settings/settings.html') });
     window.close();
   });
 

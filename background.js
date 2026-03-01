@@ -144,15 +144,15 @@ async function fetchTweetViaOEmbed(url) {
     const textMatch = htmlContent.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
     const tweetText = textMatch
       ? textMatch[1]
-          .replace(/<br\s*\/?>/gi, '\n')
-          .replace(/<a[^>]*href="([^"]*)"[^>]*>[^<]*<\/a>/gi, '$1')
-          .replace(/<[^>]+>/g, '')
-          .replace(/&mdash;/g, '—')
-          .replace(/&amp;/g, '&')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/&quot;/g, '"')
-          .trim()
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<a[^>]*href="([^"]*)"[^>]*>[^<]*<\/a>/gi, '$1')
+        .replace(/<[^>]+>/g, '')
+        .replace(/&mdash;/g, '—')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .trim()
       : '';
 
     const authorName = data.author_name || '';
@@ -215,7 +215,7 @@ async function ensureOffscreen() {
 
   try {
     await chrome.offscreen.createDocument({
-      url: 'offscreen.html',
+      url: 'pages/offscreen/offscreen.html',
       reasons: ['DOM_PARSER'],
       justification: 'Parse HTML with Readability for article extraction',
     });
@@ -389,8 +389,8 @@ async function fetchWithBackgroundTab(url) {
           const nameBlock = tweetArticle.querySelector('div[data-testid="User-Name"]');
           const spanValues = nameBlock
             ? Array.from(nameBlock.querySelectorAll('span'))
-                .map(el => clean(el.innerText || el.textContent))
-                .filter(Boolean)
+              .map(el => clean(el.innerText || el.textContent))
+              .filter(Boolean)
             : [];
 
           const authorName = spanValues.find(v => !v.startsWith('@') && !v.includes('·')) || '';
@@ -459,8 +459,8 @@ async function fetchWithBackgroundTab(url) {
           if (authorName || authorHandle) {
             const who =
               authorName && authorHandle ? `${authorName} (@${authorHandle})`
-              : authorHandle ? `@${authorHandle}`
-              : authorName;
+                : authorHandle ? `@${authorHandle}`
+                  : authorName;
             lines.push(`**Author:** ${who}`);
           }
           if (postedAt) lines.push(`**Posted:** ${postedAt}`);
@@ -530,7 +530,7 @@ async function fetchWithBackgroundTab(url) {
 
     return results[0]?.result || null;
   } finally {
-    await chrome.tabs.remove(tab.id).catch(() => {});
+    await chrome.tabs.remove(tab.id).catch(() => { });
   }
 }
 
@@ -999,7 +999,7 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
           url, error: err.message, savedAt, includeFrontmatter: true,
         });
         const filename = `${dateString()}-error-${slugify(url.slice(0, 40))}.md`;
-        await saveMarkdownFile(dirH, filename, errorMd).catch(() => {});
+        await saveMarkdownFile(dirH, filename, errorMd).catch(() => { });
       }
     }
   }
@@ -1142,7 +1142,7 @@ chrome.runtime.onInstalled.addListener(async details => {
 
   if (!setup_complete) {
     // Open onboarding tab
-    chrome.tabs.create({ url: chrome.runtime.getURL('onboarding.html') });
+    chrome.tabs.create({ url: chrome.runtime.getURL('pages/onboarding/onboarding.html') });
   }
 
   // Set defaults
