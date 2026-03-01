@@ -1,0 +1,2 @@
+[x] if it is from xiaohongshu, with one or multiple pictures, keep those pictures under a folder with the same name of the md file.
+[x] after add this extension to chrome, it shows Create Your Telegram Bot workflow. After I updated it, and the extension icon in the menu bar shows a block badge. If I click the icon, it ask me to do the setup again. After that, it will work. fix it.

@@ -1,4 +1,4 @@
-# Save as MD
+# Markdown Vault
 
 A fully decentralized, zero-backend Chrome extension that saves web pages as clean Markdown files. Send any URL to your personal Telegram bot from any device → it gets fetched, extracted, and saved to a local folder on your home computer.
 
@@ -75,7 +75,7 @@ Content:
 title: "Page Title"
 url: https://original-url.com
 saved_at: 2026-02-27T14:32:00Z
-source: save-as-md
+source: markdown-vault
 ---
 
 # Page Title

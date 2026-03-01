@@ -1,11 +1,11 @@
-// Save as MD — Settings Page
+// Markdown Vault — Settings Page
 
 'use strict';
 
 // ─── IndexedDB Helper (for folder handle) ─────────────────────────────────────
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('save-as-md', 1);
+    const req = indexedDB.open('markdown-vault', 1);
     req.onupgradeneeded = e => e.target.result.createObjectStore('kv');
     req.onsuccess = e => resolve(e.target.result);
     req.onerror = e => reject(e.target.error);
@@ -233,11 +233,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       // Test write access
       try {
-        const testFh = await dirHandle.getFileHandle('.save-as-md-test', { create: true });
+        const testFh = await dirHandle.getFileHandle('.markdown-vault-test', { create: true });
         const w = await testFh.createWritable();
         await w.write('test');
         await w.close();
-        await dirHandle.removeEntry('.save-as-md-test').catch(() => { });
+        await dirHandle.removeEntry('.markdown-vault-test').catch(() => { });
       } catch (we) {
         $('folder-msg').textContent = `Write test failed: ${we.message}`;
         $('folder-msg').className = 'field-status error';

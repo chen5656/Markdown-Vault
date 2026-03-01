@@ -1,11 +1,11 @@
-// Save as MD — Onboarding Wizard
+// Markdown Vault — Onboarding Wizard
 
 'use strict';
 
 // ─── IndexedDB Helper (duplicated from background for popup context) ───────────
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('save-as-md', 1);
+    const req = indexedDB.open('markdown-vault', 1);
     req.onupgradeneeded = e => e.target.result.createObjectStore('kv');
     req.onsuccess = e => resolve(e.target.result);
     req.onerror = e => reject(e.target.error);
@@ -28,7 +28,7 @@ let chosenDirHandle = null;
 let currentStep = 1;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function $ (id) { return document.getElementById(id); }
+function $(id) { return document.getElementById(id); }
 
 function sendMsg(type, extra = {}) {
   return new Promise((resolve, reject) => {
@@ -108,11 +108,11 @@ async function chooseFolder() {
 
     // Test write access
     try {
-      const testFile = await dirHandle.getFileHandle('.save-as-md-test', { create: true });
+      const testFile = await dirHandle.getFileHandle('.markdown-vault-test', { create: true });
       const writable = await testFile.createWritable();
       await writable.write('test');
       await writable.close();
-      await dirHandle.removeEntry('.save-as-md-test').catch(() => {});
+      await dirHandle.removeEntry('.markdown-vault-test').catch(() => { });
     } catch (writeErr) {
       alert(`Write permission test failed: ${writeErr.message}\nPlease choose a folder where you have write access.`);
       return;

@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Save as MD — Setup</title>
+  <title>Markdown Vault — Setup</title>
   <link rel="stylesheet" href="onboarding.css">
 </head>
+
 <body>
   <div class="wizard">
 
@@ -42,14 +44,8 @@
       <div class="field-group">
         <label for="bot-token" class="field-label">Bot Token</label>
         <div class="token-row">
-          <input
-            type="text"
-            id="bot-token"
-            class="input"
-            placeholder="123456789:AAF_AbCdEfGhIjKlMnOpQrStUvWxYz12345"
-            autocomplete="off"
-            spellcheck="false"
-          >
+          <input type="text" id="bot-token" class="input" placeholder="123456789:AAF_AbCdEfGhIjKlMnOpQrStUvWxYz12345"
+            autocomplete="off" spellcheck="false">
           <button id="verify-btn" class="btn btn-secondary">Verify</button>
         </div>
         <div id="token-status" class="field-status"></div>
@@ -110,7 +106,7 @@
     <div class="step hidden" id="step-3">
       <div class="step-icon done-icon">🎉</div>
       <h1>You're All Set!</h1>
-      <p class="subtitle">Save as MD is now running in the background, polling your bot every 5 minutes.</p>
+      <p class="subtitle">Markdown Vault is now running in the background, polling your bot every 5 minutes.</p>
 
       <div class="done-card">
         <div class="done-row">
@@ -142,4 +138,5 @@
 
   <script src="onboarding.js"></script>
 </body>
+
 </html>

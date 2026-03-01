@@ -1,4 +1,4 @@
-# Save-as-MD — Requirements
+# Markdown Vault — Requirements
 
 ## 1. Project Overview
 
@@ -135,7 +135,7 @@ A guided setup flow inside the extension:
   title: "Page Title"
   url: https://original-url.com
   saved_at: 2026-02-27T14:32:00Z
-  source: save-as-md
+  source: markdown-vault
   ---
   ```
 

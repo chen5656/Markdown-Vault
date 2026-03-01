@@ -1,11 +1,11 @@
-// Save as MD — Background Service Worker
+// Markdown Vault — Background Service Worker
 // Polls your Telegram bot and saves URLs as local Markdown files.
 
 'use strict';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const TELEGRAM_BASE = 'https://api.telegram.org/bot';
-const ALARM_NAME = 'save-as-md-poll';
+const ALARM_NAME = 'markdown-vault-poll';
 const DEFAULT_POLL_INTERVAL = 300; // seconds
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [30, 120, 300]; // seconds between attempts
@@ -15,7 +15,7 @@ const MIN_ARTICLE_LENGTH = 500; // chars; below this, use background tab fallbac
 // ─── IndexedDB (for FileSystemDirectoryHandle) ────────────────────────────────
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('save-as-md', 1);
+    const req = indexedDB.open('markdown-vault', 1);
     req.onupgradeneeded = e => e.target.result.createObjectStore('kv');
     req.onsuccess = e => resolve(e.target.result);
     req.onerror = e => reject(e.target.error);
@@ -126,6 +126,15 @@ function extractTweetId(url) {
   return match ? match[1] : null;
 }
 
+function isXiaohongshuURL(input) {
+  try {
+    const host = new URL(input).hostname.toLowerCase().replace(/^www\./, '');
+    return host === 'xiaohongshu.com' || host === 'xhslink.com';
+  } catch {
+    return false;
+  }
+}
+
 // ─── X/Twitter oEmbed Fallback ───────────────────────────────────────────────
 async function fetchTweetViaOEmbed(url) {
   try {
@@ -200,7 +209,7 @@ async function fetchTweetViaOEmbed(url) {
 
     return { title, content, markdownReady: true };
   } catch (e) {
-    console.warn('[save-as-md] oEmbed fallback failed:', e);
+    console.warn('[markdown-vault] oEmbed fallback failed:', e);
     return null;
   }
 }
@@ -501,6 +510,87 @@ async function fetchWithBackgroundTab(url) {
       if (xPost?.content) return xPost;
     }
 
+    // Xiaohongshu (小红书) — JS-rendered; extract note content and CDN images from live DOM
+    if (isXiaohongshuURL(url)) {
+      const MAX_POLL_MS = 15000;
+      const POLL_INTERVAL_MS = 800;
+      const pollStart = Date.now();
+
+      // Wait until note images or text content appear in the DOM
+      await new Promise((resolve) => {
+        const check = async () => {
+          if (Date.now() - pollStart > MAX_POLL_MS) { resolve(); return; }
+          try {
+            const probe = await chrome.scripting.executeScript({
+              target: { tabId: tab.id },
+              func: () => {
+                const hasImages = Array.from(document.querySelectorAll('img'))
+                  .some(img => /xhscdn|sns-img|ci\.xiaohongshu/.test(img.src || ''));
+                const hasText = !!document.querySelector('#detail-desc, .note-content, .desc');
+                return hasImages || hasText;
+              },
+            });
+            if (probe[0]?.result) { resolve(); return; }
+          } catch { /* tab not ready */ }
+          setTimeout(check, POLL_INTERVAL_MS);
+        };
+        check();
+      });
+
+      const xhsResults = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          const cleanText = t => (t || '').replace(/\s+/g, ' ').trim();
+
+          const title = document.querySelector('meta[property="og:title"]')?.content
+            || document.querySelector('#detail-title, .note-title, h1')?.innerText
+            || document.title
+            || '';
+
+          const descEl = document.querySelector('#detail-desc, .note-content, .desc, .note-text');
+          const description = descEl ? cleanText(descEl.innerText || descEl.textContent) : '';
+
+          const authorEl = document.querySelector(
+            '.author-name, .username, .user-name, .author-wrapper .name, .user-info .nickname'
+          );
+          const author = cleanText(authorEl?.innerText || authorEl?.textContent || '');
+
+          // Collect XHS CDN images, deduplicated and filtered to content images
+          const seen = new Set();
+          const imageUrls = Array.from(document.querySelectorAll('img'))
+            .map(img => img.src || img.getAttribute('src') || '')
+            .filter(src => src && /xhscdn|sns-img|ci\.xiaohongshu/.test(src))
+            .filter(src => {
+              const key = src.split('!')[0]; // strip image-processing suffix
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+
+          return { title: cleanText(title), description, author, imageUrls };
+        },
+      });
+
+      const xhsData = xhsResults[0]?.result;
+      if (xhsData && (xhsData.description || xhsData.imageUrls?.length > 0)) {
+        const lines = [];
+        if (xhsData.author) lines.push(`**Author:** ${xhsData.author}`, '');
+        if (xhsData.description) lines.push(xhsData.description, '');
+        if (xhsData.imageUrls?.length > 0) {
+          lines.push('## Images', '');
+          xhsData.imageUrls.forEach((src, idx) => lines.push(`![Image ${idx + 1}](${src})`));
+          lines.push('');
+        }
+        const content = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+        return {
+          title: xhsData.title || 'Xiaohongshu Post',
+          content,
+          markdownReady: true,
+          imageUrls: xhsData.imageUrls || [],
+        };
+      }
+    }
+
     // Inject Readability
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -637,6 +727,46 @@ async function saveImageToFolder(dirHandle, date, filename, arrayBuffer) {
   return `${date}/${filename}`;
 }
 
+// Download a list of image URLs into a named subfolder; returns array of saved filenames (null on failure)
+async function downloadImagesToFolder(dirHandle, folderName, imageUrls) {
+  let subDir;
+  try {
+    subDir = await dirHandle.getDirectoryHandle(folderName, { create: true });
+  } catch {
+    console.warn('[markdown-vault] Cannot create image folder:', folderName);
+    return imageUrls.map(() => null);
+  }
+
+  const paths = [];
+  for (let i = 0; i < imageUrls.length; i++) {
+    const remoteUrl = imageUrls[i];
+    try {
+      const resp = await fetch(remoteUrl);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const buffer = await resp.arrayBuffer();
+
+      // Derive extension from URL path, default to jpg
+      let ext = 'jpg';
+      try {
+        const urlPath = new URL(remoteUrl).pathname;
+        const parts = urlPath.split('.');
+        if (parts.length > 1) ext = parts.pop().split('?')[0].toLowerCase() || 'jpg';
+      } catch { /* use default */ }
+
+      const imgFilename = `${String(i + 1).padStart(2, '0')}.${ext}`;
+      const fh = await subDir.getFileHandle(imgFilename, { create: true });
+      const writable = await fh.createWritable();
+      await writable.write(buffer);
+      await writable.close();
+      paths.push(imgFilename);
+    } catch (err) {
+      console.warn(`[markdown-vault] Failed to download image ${i + 1} (${remoteUrl}):`, err);
+      paths.push(null);
+    }
+  }
+  return paths;
+}
+
 // ─── Markdown Building ────────────────────────────────────────────────────────
 function buildFrontmatter(fields) {
   const lines = ['---'];
@@ -650,14 +780,14 @@ function buildFrontmatter(fields) {
 
 function buildArticleMarkdown({ title, url, savedAt, markdown, includeFrontmatter }) {
   const fm = includeFrontmatter
-    ? buildFrontmatter({ title, url, saved_at: savedAt, source: 'save-as-md' })
+    ? buildFrontmatter({ title, url, saved_at: savedAt, source: 'markdown-vault' })
     : '';
   return `${fm}# ${title}\n\n${markdown}\n`;
 }
 
 function buildErrorMarkdown({ url, error, savedAt, includeFrontmatter }) {
   const fm = includeFrontmatter
-    ? buildFrontmatter({ url, saved_at: savedAt, source: 'save-as-md', status: 'error' })
+    ? buildFrontmatter({ url, saved_at: savedAt, source: 'markdown-vault', status: 'error' })
     : '';
   return `${fm}# Save Error\n\nFailed to save: ${url}\n\n**Error:** ${error}\n\n**Time:** ${savedAt}\n`;
 }
@@ -713,7 +843,7 @@ async function checkAndHandleDisconnect() {
     chrome.notifications.create(`disconnect-${warning.id}`, {
       type: 'basic',
       iconUrl: 'icons/icon48.png',
-      title: '⚠️ Save as MD — Disconnected',
+      title: '⚠️ Markdown Vault — Disconnected',
       message: `Offline for ${durationStr}.\nURLs sent during ${formatDateTime(startDt)} — ${formatDateTime(endDt)} may not have been saved.`,
       priority: 2,
     });
@@ -816,7 +946,7 @@ async function getSettings() {
 async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
   const dirHandle = await getDirHandle();
   if (!dirHandle) {
-    console.warn('[save-as-md] No directory handle — skipping URL save');
+    console.warn('[markdown-vault] No directory handle — skipping URL save');
     return;
   }
 
@@ -842,7 +972,7 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
         const saved = await saveMarkdownFile(dirHandle, filename, errorMd);
         chrome.notifications.create({
           type: 'basic', iconUrl: 'icons/icon48.png',
-          title: 'Save as MD — Save Failed',
+          title: 'Markdown Vault — Save Failed',
           message: `Could not save: ${url}\nError: ${fetchErr.message}`,
         });
         return;
@@ -864,13 +994,13 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
       await saveMarkdownFile(dirHandle, filename, errorMd);
       chrome.notifications.create({
         type: 'basic', iconUrl: 'icons/icon48.png',
-        title: 'Save as MD — Save Failed (all retries)',
+        title: 'Markdown Vault — Save Failed (all retries)',
         message: `Failed to save ${url} after ${MAX_RETRIES} attempts.\nLast error: ${fetchErr.message}`,
       });
       return;
     }
 
-    const useLiveDomFirst = isTwitterStatusURL(finalUrl || url);
+    const useLiveDomFirst = isTwitterStatusURL(finalUrl || url) || isXiaohongshuURL(finalUrl || url);
 
     // Step 2: Parse HTML → Readability → Markdown
     let parsed = null;
@@ -878,13 +1008,13 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
       try {
         parsed = await parseHtmlViaOffscreen(html, finalUrl || url, use_gfm);
       } catch (parseErr) {
-        console.warn('[save-as-md] Offscreen parse failed:', parseErr);
+        console.warn('[markdown-vault] Offscreen parse failed:', parseErr);
       }
     }
 
     // Step 3: If insufficient content, try background tab (JS-rendered pages)
     if (useLiveDomFirst || !parsed || !parsed.content || parsed.content.length < MIN_ARTICLE_LENGTH) {
-      console.log('[save-as-md] Falling back to background tab for:', url);
+      console.log('[markdown-vault] Falling back to background tab for:', url);
       try {
         const tabResult = await fetchWithBackgroundTab(url);
         if (tabResult?.content) {
@@ -893,6 +1023,7 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
               title: tabResult.title || parsed?.title || url,
               content: tabResult.content,
               success: true,
+              imageUrls: tabResult.imageUrls || [],
             };
           } else {
             // tabResult.content is Readability-extracted HTML — convert to Markdown
@@ -914,7 +1045,7 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
           }
         }
       } catch (tabErr) {
-        console.warn('[save-as-md] Background tab failed:', tabErr);
+        console.warn('[markdown-vault] Background tab failed:', tabErr);
         // Raw HTML fallback
         if (html) {
           const stripped = html.replace(/<script[\s\S]*?<\/script>/gi, '')
@@ -937,13 +1068,13 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
       try {
         parsed = await parseHtmlViaOffscreen(html, finalUrl || url, use_gfm);
       } catch (parseErr) {
-        console.warn('[save-as-md] Offscreen fallback parse failed:', parseErr);
+        console.warn('[markdown-vault] Offscreen fallback parse failed:', parseErr);
       }
     }
 
     // Last resort for X/Twitter: try oEmbed API
     if ((!parsed || !parsed.content) && isTwitterStatusURL(url)) {
-      console.log('[save-as-md] Trying oEmbed fallback for:', url);
+      console.log('[markdown-vault] Trying oEmbed fallback for:', url);
       const oembedResult = await fetchTweetViaOEmbed(url);
       if (oembedResult?.content) {
         parsed = {
@@ -965,16 +1096,39 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
     }
 
     const title = parsed.title || new URL(url).hostname;
+    const mdFilename = `${dateString()}-${slugify(title)}.md`;
+
+    // Resolve unique file handle first so we know the final name before writing
+    const fileHandle = await getUniqueFileHandle(dirHandle, mdFilename);
+    const savedName = fileHandle.name;
+
+    // Download XHS images into a folder named after the saved MD file
+    let articleContent = parsed.content;
+    const imageUrlsToDownload = parsed.imageUrls || [];
+    if (imageUrlsToDownload.length > 0) {
+      const folderName = savedName.replace(/\.md$/, '');
+      try {
+        const localPaths = await downloadImagesToFolder(dirHandle, folderName, imageUrlsToDownload);
+        imageUrlsToDownload.forEach((remoteUrl, i) => {
+          if (localPaths[i]) {
+            articleContent = articleContent.split(remoteUrl).join(`./${folderName}/${localPaths[i]}`);
+          }
+        });
+      } catch (imgErr) {
+        console.warn('[markdown-vault] Failed to download XHS images:', imgErr);
+        // Keep remote URLs — content unchanged
+      }
+    }
+
     const markdown = buildArticleMarkdown({
       title,
       url,
       savedAt,
-      markdown: parsed.content,
+      markdown: articleContent,
       includeFrontmatter: include_frontmatter,
     });
 
-    const filename = `${dateString()}-${slugify(title)}.md`;
-    const savedName = await saveMarkdownFile(dirHandle, filename, markdown);
+    await writeFile(fileHandle, markdown);
 
     // Notify
     chrome.notifications.create({
@@ -987,7 +1141,7 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
     await clearPendingRetry(url);
 
   } catch (err) {
-    console.error('[save-as-md] Unexpected error processing URL:', url, err);
+    console.error('[markdown-vault] Unexpected error processing URL:', url, err);
 
     const nextAttempt = attemptIndex + 1;
     if (nextAttempt < MAX_RETRIES && err.retryable !== false) {
@@ -1044,7 +1198,7 @@ async function processImageMessage(message, token, date, dirHandle, includeFront
     const entry = `![Image](./${savedPath})${caption}`;
     await appendToDaily(dirHandle, entry, date);
   } catch (err) {
-    console.error('[save-as-md] Image processing error:', err);
+    console.error('[markdown-vault] Image processing error:', err);
     const entry = `*Failed to save image: ${err.message}*`;
     await appendToDaily(dirHandle, entry, date);
   }
@@ -1116,7 +1270,7 @@ async function poll() {
     await updateBadge();
 
   } catch (err) {
-    console.error('[save-as-md] Poll error:', err);
+    console.error('[markdown-vault] Poll error:', err);
     await setStorage({ last_telegram_error: err.message });
     await updateBadge();
   }
@@ -1140,8 +1294,10 @@ async function setupAlarm(intervalSeconds) {
 chrome.runtime.onInstalled.addListener(async details => {
   const { setup_complete } = await getStorage(['setup_complete']);
 
-  if (!setup_complete) {
-    // Open onboarding tab
+  // Only auto-open onboarding on a fresh install, not on extension updates.
+  // On updates, setup_complete is preserved in storage; auto-opening onboarding
+  // would force the user to redo setup unnecessarily.
+  if (details.reason === 'install' && !setup_complete) {
     chrome.tabs.create({ url: chrome.runtime.getURL('pages/onboarding/onboarding.html') });
   }
 
@@ -1172,6 +1328,14 @@ chrome.runtime.onInstalled.addListener(async details => {
   // Set up alarm
   const { poll_interval = DEFAULT_POLL_INTERVAL } = await getStorage(['poll_interval']);
   await setupAlarm(poll_interval);
+
+  // On update, proactively check if the stored directory handle still has
+  // permission (it may be revoked after extension reload/update). This ensures
+  // the badge and popup reflect the correct state immediately rather than only
+  // after the first URL is processed.
+  if (details.reason === 'update' && setup_complete) {
+    await getDirHandle();
+  }
 
   await updateBadge();
 });
@@ -1311,9 +1475,17 @@ chrome.runtime.onStartup.addListener(async () => {
   const { setup_complete, is_polling_active, poll_interval = DEFAULT_POLL_INTERVAL } = await getStorage([
     'setup_complete', 'is_polling_active', 'poll_interval',
   ]);
-  if (setup_complete && is_polling_active !== false) {
-    await setupAlarm(poll_interval);
-    await poll();
+  if (setup_complete) {
+    // Proactively check FS permission on browser startup — the stored directory
+    // handle loses its granted permission after the browser restarts. Checking
+    // here ensures the badge and popup show the correct state immediately,
+    // rather than only after the first URL is received from Telegram.
+    await getDirHandle();
+
+    if (is_polling_active !== false) {
+      await setupAlarm(poll_interval);
+      await poll();
+    }
   }
   await updateBadge();
 });

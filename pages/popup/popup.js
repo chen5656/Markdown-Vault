@@ -1,4 +1,4 @@
-// Save as MD — Popup Script
+// Markdown Vault — Popup Script
 
 'use strict';
 

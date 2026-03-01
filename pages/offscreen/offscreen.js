@@ -1,4 +1,4 @@
-// Save as MD — Offscreen Document
+// Markdown Vault — Offscreen Document
 // Handles DOM parsing (DOMParser not available in service workers).
 // Receives HTML from the service worker, runs Readability, converts with Turndown.
 
