@@ -287,7 +287,18 @@ body {
   font-weight: 500;
   color: #15803d;
   word-break: break-all;
+  flex: 1;
 }
+
+.folder-status-icon {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.folder-status-icon.ok    { color: #16a34a; }
+.folder-status-icon.warn  { color: #d97706; }
+.folder-status-icon.error { color: #dc2626; }
 
 /* ── History list ── */
 .history-list {

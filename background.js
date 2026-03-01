@@ -630,12 +630,34 @@ async function getDirHandle() {
   if (!handle) return null;
 
   const perm = await handle.queryPermission({ mode: 'readwrite' });
-  if (perm === 'granted') return handle;
+  if (perm !== 'granted') {
+    // Can't requestPermission() from service worker — signal popup
+    await setStorage({ fs_permission_needed: true, folder_status: 'permission_needed' });
+    await updateBadge();
+    return null;
+  }
 
-  // Can't requestPermission() from service worker — signal popup
-  await setStorage({ fs_permission_needed: true });
-  await updateBadge();
-  return null;
+  // Verify the folder still exists on disk — the handle can be permission-granted
+  // but the underlying directory may have been deleted by the user.
+  try {
+    const iter = handle.values();
+    await iter.next();
+  } catch (e) {
+    if (e.name === 'NotFoundError') {
+      await setStorage({ fs_permission_needed: true, folder_status: 'missing' });
+      await updateBadge();
+      chrome.notifications.create({
+        type: 'basic', iconUrl: 'docs/icon_64.png',
+        title: 'Markdown Vault — Save Folder Missing',
+        message: 'Your save folder no longer exists. Open Settings and select a new folder.',
+      });
+      return null;
+    }
+    throw e;
+  }
+
+  await setStorage({ fs_permission_needed: false, folder_status: 'ok' });
+  return handle;
 }
 
 function slugify(text) {
@@ -842,7 +864,7 @@ async function checkAndHandleDisconnect() {
     // Chrome notification
     chrome.notifications.create(`disconnect-${warning.id}`, {
       type: 'basic',
-      iconUrl: 'icons/icon48.png',
+      iconUrl: 'docs/icon_64.png',
       title: '⚠️ Markdown Vault — Disconnected',
       message: `Offline for ${durationStr}.\nURLs sent during ${formatDateTime(startDt)} — ${formatDateTime(endDt)} may not have been saved.`,
       priority: 2,
@@ -971,7 +993,7 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
         const filename = `${dateString()}-error-${slugify(url.replace(/https?:\/\//, '').slice(0, 40))}.md`;
         const saved = await saveMarkdownFile(dirHandle, filename, errorMd);
         chrome.notifications.create({
-          type: 'basic', iconUrl: 'icons/icon48.png',
+          type: 'basic', iconUrl: 'docs/icon_64.png',
           title: 'Markdown Vault — Save Failed',
           message: `Could not save: ${url}\nError: ${fetchErr.message}`,
         });
@@ -993,7 +1015,7 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
       const filename = `${dateString()}-error-${slugify(url.replace(/https?:\/\//, '').slice(0, 40))}.md`;
       await saveMarkdownFile(dirHandle, filename, errorMd);
       chrome.notifications.create({
-        type: 'basic', iconUrl: 'icons/icon48.png',
+        type: 'basic', iconUrl: 'docs/icon_64.png',
         title: 'Markdown Vault — Save Failed (all retries)',
         message: `Failed to save ${url} after ${MAX_RETRIES} attempts.\nLast error: ${fetchErr.message}`,
       });
@@ -1132,7 +1154,7 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
 
     // Notify
     chrome.notifications.create({
-      type: 'basic', iconUrl: 'icons/icon48.png',
+      type: 'basic', iconUrl: 'docs/icon_64.png',
       title: 'Saved as Markdown',
       message: `"${title.slice(0, 60)}" → ${savedName}`,
     });
@@ -1245,6 +1267,15 @@ async function poll() {
   if (!setup_complete || !bot_token) return;
   if (is_polling_active === false) return;
 
+  // Verify the save folder is accessible before hitting Telegram API.
+  // If the folder is missing or permission was revoked, enter broken mode
+  // and skip polling until the user fixes the folder in Settings.
+  const folderHandle = await getDirHandle();
+  if (!folderHandle) {
+    await updateBadge();
+    return;
+  }
+
   let { last_update_id = 0 } = await getStorage(['last_update_id']);
 
   try {
@@ -1314,6 +1345,7 @@ chrome.runtime.onInstalled.addListener(async details => {
     last_update_id: 0,
     has_disconnect_warning: false,
     fs_permission_needed: false,
+    folder_status: 'unknown',
     last_telegram_error: null,
   };
 
@@ -1388,7 +1420,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           'bot_token', 'bot_username', 'last_successful_poll', 'recent_saves',
           'connection_warnings', 'is_polling_active', 'poll_interval',
           'setup_complete', 'has_disconnect_warning', 'fs_permission_needed',
-          'last_telegram_error', 'pending_retries', 'last_update_id',
+          'folder_status', 'last_telegram_error', 'pending_retries', 'last_update_id',
           'include_frontmatter', 'use_gfm', 'file_naming_pattern',
         ]);
         // Don't expose raw token — just whether one is set
@@ -1442,8 +1474,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       case 'fs_permission_granted': {
-        await setStorage({ fs_permission_needed: false });
+        await setStorage({ fs_permission_needed: false, folder_status: 'ok' });
         await updateBadge();
+        return { success: true };
+      }
+
+      case 'save_url': {
+        const settings = await getSettings();
+        await processURLWithRetry(message.url, 0, { manual: true }, settings);
         return { success: true };
       }
 

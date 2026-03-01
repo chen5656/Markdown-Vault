@@ -2,6 +2,26 @@
 
 'use strict';
 
+// ─── IndexedDB Helper (for re-granting folder access inline) ──────────────────
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('markdown-vault', 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore('kv');
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror = e => reject(e.target.error);
+  });
+}
+
+async function idbSet(key, value) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('kv', 'readwrite');
+    tx.objectStore('kv').put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = e => reject(e.target.error);
+  });
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function $(id) { return document.getElementById(id); }
 
@@ -49,6 +69,19 @@ function renderState(state) {
 
   if (state.fs_permission_needed) {
     showScreen('permission-needed');
+    // Set description based on why folder access is needed
+    const desc = $('folder-access-desc');
+    if (state.folder_status === 'missing') {
+      desc.textContent = 'Your save folder was deleted. Click below to select a new folder — no other settings need to change.';
+    } else {
+      desc.textContent = 'Chrome revoked folder access (common after a browser restart). Click below to re-select your folder — no other settings need to change.';
+    }
+    // Auto-trigger the folder picker on the first render — the popup was opened
+    // by a user click so we have user activation without requiring an extra button click.
+    if (!autoRegrantAttempted) {
+      autoRegrantAttempted = true;
+      regrantFolderAccess();
+    }
     return;
   }
 
@@ -166,6 +199,33 @@ function esc(str) {
     .replace(/"/g, '&quot;');
 }
 
+// ─── Folder Re-grant ──────────────────────────────────────────────────────────
+// Tracks whether we already auto-triggered the picker in this popup session.
+let autoRegrantAttempted = false;
+
+async function regrantFolderAccess() {
+  const btn = $('regrant-permission');
+  btn.disabled = true;
+  btn.textContent = 'Selecting folder…';
+  try {
+    const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    const testFh = await dirHandle.getFileHandle('.markdown-vault-test', { create: true });
+    const w = await testFh.createWritable();
+    await w.write('test');
+    await w.close();
+    await dirHandle.removeEntry('.markdown-vault-test').catch(() => {});
+    await idbSet('save_dir_handle', dirHandle);
+    await sendMsg('fs_permission_granted');
+    await refresh();
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Re-grant Folder Access';
+    if (e.name !== 'AbortError') {
+      alert(`Could not open folder: ${e.message}`);
+    }
+  }
+}
+
 // ─── Actions ──────────────────────────────────────────────────────────────────
 async function refresh() {
   try {
@@ -182,8 +242,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Auto-refresh last-poll time every 10s
   setInterval(() => {
-    const el = $('last-poll');
-    // Re-render just the time
     refresh();
   }, 10_000);
 
@@ -193,11 +251,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.close();
   });
 
-  // Permission screen: open settings to re-grant folder access
-  $('regrant-permission').addEventListener('click', () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL('pages/settings/settings.html') + '#folder' });
-    window.close();
-  });
+  // Permission screen: re-grant folder access (also auto-triggered on popup open via renderState).
+  $('regrant-permission').addEventListener('click', () => regrantFolderAccess());
 
   // Settings link
   $('open-settings').addEventListener('click', e => {
@@ -238,5 +293,41 @@ document.addEventListener('DOMContentLoaded', async () => {
       await sendMsg('set_interval', { intervalSeconds: seconds });
       await refresh();
     });
+  });
+
+  // Paste URL zone
+  const pasteZone = $('paste-zone');
+  const pasteLabel = $('paste-label');
+
+  function setPasteState(state, msg) {
+    pasteZone.className = 'paste-zone' + (state ? ` ${state}` : '');
+    pasteLabel.textContent = msg;
+  }
+
+  async function handlePastedURL(url) {
+    setPasteState('saving', 'Saving…');
+    try {
+      await sendMsg('save_url', { url });
+      setPasteState('saving', 'Saved!');
+      await refresh();
+    } catch (e) {
+      setPasteState('error', `Error: ${e.message}`);
+    } finally {
+      setTimeout(() => setPasteState('', 'Paste a URL to save it'), 2500);
+    }
+  }
+
+  function onPaste(e) {
+    const text = e.clipboardData.getData('text').trim();
+    if (/^https?:\/\/[^\s]+/.test(text)) {
+      e.preventDefault();
+      handlePastedURL(text);
+    }
+  }
+
+  pasteZone.addEventListener('paste', onPaste);
+  // Also catch paste anywhere in the popup when the main screen is visible
+  document.addEventListener('paste', e => {
+    if (!$('main').classList.contains('hidden')) onPaste(e);
   });
 });

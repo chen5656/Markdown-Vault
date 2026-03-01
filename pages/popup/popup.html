@@ -21,7 +21,7 @@
   <div id="permission-needed" class="screen hidden">
     <div class="setup-icon">📁</div>
     <h2>Folder Access Needed</h2>
-    <p>The save folder permission was revoked. Re-grant access to continue.</p>
+    <p id="folder-access-desc"></p>
     <button id="regrant-permission" class="btn btn-warning">Re-grant Folder Access</button>
   </div>
 
@@ -80,6 +80,13 @@
         <button class="interval-btn active" data-seconds="300">5m</button>
         <button class="interval-btn" data-seconds="1800">30m</button>
         <button class="interval-btn" data-seconds="3600">1h</button>
+      </div>
+    </div>
+
+    <!-- Paste URL zone -->
+    <div class="section">
+      <div id="paste-zone" class="paste-zone" tabindex="0">
+        <div id="paste-label" class="paste-label">Paste a URL to save it</div>
       </div>
     </div>
 

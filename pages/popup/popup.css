@@ -398,3 +398,37 @@ body {
   font-weight: 600;
   color: #92400e;
 }
+
+/* ── Paste URL zone ── */
+.paste-zone {
+  border: 2px dashed #cbd5e1;
+  border-radius: 8px;
+  padding: 14px 12px;
+  text-align: center;
+  cursor: text;
+  transition: border-color 0.15s, background 0.15s;
+  outline: none;
+}
+
+.paste-zone:focus,
+.paste-zone.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.paste-zone.saving {
+  border-color: #16a34a;
+  background: #f0fdf4;
+}
+
+.paste-zone.error {
+  border-color: #ef4444;
+  background: #fef2f2;
+}
+
+.paste-label {
+  font-size: 12px;
+  color: #94a3b8;
+  pointer-events: none;
+  user-select: none;
+}

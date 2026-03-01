@@ -91,6 +91,22 @@ async function loadSettings() {
   if (dirHandle) {
     $('current-folder-name').textContent = dirHandle.name;
     $('current-folder-display').classList.remove('hidden');
+    // Show folder status icon
+    const statusEl = $('folder-status-icon');
+    const folderStatus = state.folder_status || 'unknown';
+    if (folderStatus === 'ok') {
+      statusEl.textContent = '✓';
+      statusEl.className = 'folder-status-icon ok';
+      statusEl.title = 'Folder is accessible';
+    } else if (folderStatus === 'missing') {
+      statusEl.textContent = '!';
+      statusEl.className = 'folder-status-icon error';
+      statusEl.title = 'Folder was deleted — please select a new folder';
+    } else {
+      statusEl.textContent = '?';
+      statusEl.className = 'folder-status-icon warn';
+      statusEl.title = 'Folder access needs to be re-granted';
+    }
   }
 
   // Poll interval
@@ -249,6 +265,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       $('current-folder-name').textContent = dirHandle.name;
       $('current-folder-display').classList.remove('hidden');
+      const si = $('folder-status-icon');
+      si.textContent = '✓';
+      si.className = 'folder-status-icon ok';
+      si.title = 'Folder is accessible';
       $('folder-msg').textContent = '✓ Folder saved';
       $('folder-msg').className = 'field-status success';
 
