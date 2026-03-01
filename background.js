@@ -121,6 +121,90 @@ function isTwitterStatusURL(input) {
   }
 }
 
+function extractTweetId(url) {
+  const match = url.match(/\/status\/(\d+)/);
+  return match ? match[1] : null;
+}
+
+// ─── X/Twitter oEmbed Fallback ───────────────────────────────────────────────
+async function fetchTweetViaOEmbed(url) {
+  try {
+    const oembedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(url)}&omit_script=true`;
+    const resp = await fetch(oembedUrl);
+    if (!resp.ok) return null;
+
+    const data = await resp.json();
+    if (!data.html) return null;
+
+    // Parse the embed HTML to extract text content
+    // oEmbed returns HTML like: <blockquote class="twitter-tweet"><p>tweet text</p>&mdash; Author (@handle) ...
+    const htmlContent = data.html;
+
+    // Extract text from the blockquote
+    const textMatch = htmlContent.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
+    const tweetText = textMatch
+      ? textMatch[1]
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<a[^>]*href="([^"]*)"[^>]*>[^<]*<\/a>/gi, '$1')
+          .replace(/<[^>]+>/g, '')
+          .replace(/&mdash;/g, '—')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .trim()
+      : '';
+
+    const authorName = data.author_name || '';
+    const authorUrl = data.author_url || '';
+    const authorHandle = authorUrl ? authorUrl.split('/').pop() : '';
+
+    const lines = [];
+    if (authorName || authorHandle) {
+      const who = authorName && authorHandle
+        ? `${authorName} (@${authorHandle})`
+        : authorHandle ? `@${authorHandle}` : authorName;
+      lines.push(`**Author:** ${who}`);
+    }
+    lines.push(`**Post URL:** ${url}`);
+    lines.push('');
+
+    if (tweetText) {
+      lines.push(tweetText);
+      lines.push('');
+    }
+
+    // Extract any links from the tweet text
+    const linkMatches = [...(tweetText.matchAll(/https?:\/\/[^\s]+/g) || [])];
+    const links = linkMatches
+      .map(m => m[0])
+      .filter(l => {
+        try {
+          const host = new URL(l).hostname.toLowerCase().replace(/^www\./, '');
+          return !(host === 'x.com' || host === 'twitter.com' || host === 't.co');
+        } catch { return false; }
+      });
+    if (links.length) {
+      lines.push('## Links');
+      lines.push('');
+      for (const link of links) lines.push(`- ${link}`);
+      lines.push('');
+    }
+
+    lines.push('*Note: Images may not be available via oEmbed. Visit the original post to view media.*');
+
+    const content = lines.join('\n').trim();
+    const displayAuthor = authorHandle ? `@${authorHandle}` : authorName || 'X';
+    const preview = tweetText ? tweetText.slice(0, 72) : '';
+    const title = preview ? `${displayAuthor}: ${preview}` : `${displayAuthor} on X`;
+
+    return { title, content, markdownReady: true };
+  } catch (e) {
+    console.warn('[save-as-md] oEmbed fallback failed:', e);
+    return null;
+  }
+}
+
 // ─── Offscreen Document ───────────────────────────────────────────────────────
 async function ensureOffscreen() {
   // hasDocument() added in Chrome 116
@@ -235,9 +319,33 @@ async function fetchWithBackgroundTab(url) {
       chrome.tabs.onUpdated.addListener(listener);
     });
 
-    // X/Twitter posts are highly dynamic; extract from live DOM directly to avoid
-    // unrelated overlays polluting Readability output.
+    // X/Twitter posts are highly dynamic; wait for tweet content to render,
+    // then extract from live DOM directly.
     if (isTwitterStatusURL(url)) {
+      // Poll DOM until tweet content appears (X.com loads asynchronously after 'complete')
+      const MAX_POLL_MS = 12000;
+      const POLL_INTERVAL_MS = 500;
+      const pollStart = Date.now();
+
+      await new Promise((resolve) => {
+        const check = async () => {
+          if (Date.now() - pollStart > MAX_POLL_MS) { resolve(); return; }
+          try {
+            const probe = await chrome.scripting.executeScript({
+              target: { tabId: tab.id },
+              func: () => {
+                const article = document.querySelector('article[data-testid="tweet"], article[role="article"]');
+                const tweetText = document.querySelector('div[data-testid="tweetText"]');
+                return !!(article && tweetText);
+              },
+            });
+            if (probe[0]?.result) { resolve(); return; }
+          } catch { /* tab not ready */ }
+          setTimeout(check, POLL_INTERVAL_MS);
+        };
+        check();
+      });
+
       const xResults = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         func: () => {
@@ -830,6 +938,19 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
         parsed = await parseHtmlViaOffscreen(html, finalUrl || url, use_gfm);
       } catch (parseErr) {
         console.warn('[save-as-md] Offscreen fallback parse failed:', parseErr);
+      }
+    }
+
+    // Last resort for X/Twitter: try oEmbed API
+    if ((!parsed || !parsed.content) && isTwitterStatusURL(url)) {
+      console.log('[save-as-md] Trying oEmbed fallback for:', url);
+      const oembedResult = await fetchTweetViaOEmbed(url);
+      if (oembedResult?.content) {
+        parsed = {
+          title: oembedResult.title,
+          content: oembedResult.content,
+          success: true,
+        };
       }
     }
 
