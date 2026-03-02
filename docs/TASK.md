@@ -5,3 +5,6 @@
 [ ] add a funtion, 做右键菜单 Save to Markdown Vault
 需要加 contextMenus 权限（你现在还没有：manifest.json (line 6)），然后在 background.js 里监听菜单点击并调用现有 save_url 流程。 so, 右键菜单 Save to Markdown Vault will be an option, and user can turn on/ off in the setting. 
 
+[ ] 如果发的是图片，命名，date+name.jpg
+[ ] copy paste url, bug, it will save twice.
+[ ] 显示last pull和next pull的时间

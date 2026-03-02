@@ -30,13 +30,20 @@ let currentStep = 1;
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function $(id) { return document.getElementById(id); }
 
-function sendMsg(type, extra = {}) {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ type, ...extra }, resp => {
-      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-      else resolve(resp);
-    });
-  });
+async function sendMsg(type, extra = {}) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ type, ...extra }, resp => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else resolve(resp);
+        });
+      });
+    } catch (e) {
+      if (attempt === 0) { await new Promise(r => setTimeout(r, 300)); continue; }
+      throw e;
+    }
+  }
 }
 
 function showStep(n) {

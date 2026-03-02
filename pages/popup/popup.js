@@ -25,13 +25,20 @@ async function idbSet(key, value) {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function $(id) { return document.getElementById(id); }
 
-function sendMsg(type, extra = {}) {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ type, ...extra }, resp => {
-      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-      else resolve(resp);
-    });
-  });
+async function sendMsg(type, extra = {}) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ type, ...extra }, resp => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else resolve(resp);
+        });
+      });
+    } catch (e) {
+      if (attempt === 0) { await new Promise(r => setTimeout(r, 300)); continue; }
+      throw e;
+    }
+  }
 }
 
 function timeAgo(isoString) {
@@ -319,9 +326,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function onPaste(e) {
     const text = e.clipboardData.getData('text').trim();
-    if (/^https?:\/\/[^\s]+/.test(text)) {
+    // Support multiple URLs (one per line)
+    const urls = text.split(/[\n\r]+/).map(l => l.trim()).filter(l => /^https?:\/\/[^\s]+/.test(l));
+    if (urls.length > 0) {
       e.preventDefault();
-      handlePastedURL(text);
+      urls.reduce((chain, url) => chain.then(() => handlePastedURL(url)), Promise.resolve());
+    } else if (text.length > 0) {
+      e.preventDefault();
+      setPasteState('error', 'Not a valid URL');
+      setTimeout(() => setPasteState('', 'Paste a URL to save it'), 2000);
     }
   }
 

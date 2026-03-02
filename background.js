@@ -11,6 +11,7 @@ const MAX_RETRIES = 3;
 const RETRY_DELAYS = [30, 120, 300]; // seconds between attempts
 const DISCONNECT_THRESHOLD = 24 * 60 * 60 * 1000; // 24h in ms
 const MIN_ARTICLE_LENGTH = 500; // chars; below this, use background tab fallback
+const MAX_PAGE_SIZE = 5 * 1024 * 1024; // 5MB max for text page fetch
 
 // ─── IndexedDB (for FileSystemDirectoryHandle) ────────────────────────────────
 function openDB() {
@@ -58,6 +59,17 @@ async function telegramCall(token, method, params = {}) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
   });
+  if (resp.status === 401) {
+    const err = new Error('Bot token is invalid or revoked. Update your token in Settings.');
+    err.retryable = false;
+    throw err;
+  }
+  if (resp.status === 429) {
+    const retryAfter = parseInt(resp.headers.get('retry-after') || '60', 10);
+    const err = new Error(`Telegram rate limit — retry after ${retryAfter}s`);
+    err.retryable = true;
+    throw err;
+  }
   if (!resp.ok) throw new Error(`HTTP ${resp.status} calling Telegram ${method}`);
   const data = await resp.json();
   if (!data.ok) throw new Error(`Telegram error: ${data.description}`);
@@ -132,6 +144,36 @@ function isXiaohongshuURL(input) {
     return host === 'xiaohongshu.com' || host === 'xhslink.com';
   } catch {
     return false;
+  }
+}
+
+// ─── Sanitization Helpers ────────────────────────────────────────────────────
+function sanitizeUrlForDisplay(url) {
+  try {
+    const u = new URL(url);
+    if (u.username || u.password) {
+      u.username = '***';
+      u.password = '***';
+    }
+    return u.toString();
+  } catch { return url; }
+}
+
+function sanitizeTitle(title) {
+  return (title || '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildFilename(title, pattern, date) {
+  const slug = slugify(title);
+  const d = date || dateString();
+  switch (pattern) {
+    case 'slug-YYYY-MM-DD': return `${slug}-${d}.md`;
+    case 'slug':            return `${slug}.md`;
+    case 'YYYY-MM-DD-slug':
+    default:                return `${d}-${slug}.md`;
   }
 }
 
@@ -276,6 +318,7 @@ async function fetchURL(url) {
   try {
     const resp = await fetch(url, {
       credentials: 'include',
+      redirect: 'follow',
       signal: controller.signal,
       headers: {
         'User-Agent':
@@ -293,14 +336,33 @@ async function fetchURL(url) {
       throw err;
     }
 
+    const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+    const isHTML = contentType.includes('text/html') || contentType.includes('application/xhtml');
+
+    // Non-HTML, non-text content (PDF, image, etc.) — return as binary for direct file save
+    if (!isHTML && !contentType.includes('text/')) {
+      const buffer = await resp.arrayBuffer();
+      return { html: null, finalUrl: resp.url, contentType, binaryData: buffer };
+    }
+
     const html = await resp.text();
-    return { html, finalUrl: resp.url };
+    // Guard against extremely large pages
+    return {
+      html: html.length > MAX_PAGE_SIZE ? html.slice(0, MAX_PAGE_SIZE) : html,
+      finalUrl: resp.url,
+      contentType,
+    };
   } catch (e) {
     clearTimeout(timer);
     if (e.name === 'AbortError') {
       const err = new Error('Request timed out after 30s');
       err.retryable = true;
       throw err;
+    }
+    // Redirect loops are not retryable
+    if (e.message?.includes('redirect')) {
+      e.retryable = false;
+      throw e;
     }
     if (!e.status) e.retryable = true; // network error
     throw e;
@@ -567,7 +629,8 @@ async function fetchWithBackgroundTab(url) {
               return true;
             });
 
-          return { title: cleanText(title), description, author, imageUrls };
+          const hasVideo = !!document.querySelector('video, .player-container, .video-player, xg-video-container');
+          return { title: cleanText(title), description, author, imageUrls, hasVideo };
         },
       });
 
@@ -576,6 +639,9 @@ async function fetchWithBackgroundTab(url) {
         const lines = [];
         if (xhsData.author) lines.push(`**Author:** ${xhsData.author}`, '');
         if (xhsData.description) lines.push(xhsData.description, '');
+        if (xhsData.hasVideo) {
+          lines.push('> *This post contains a video that could not be saved. Visit the original URL to view it.*', '');
+        }
         if (xhsData.imageUrls?.length > 0) {
           lines.push('## Images', '');
           xhsData.imageUrls.forEach((src, idx) => lines.push(`![Image ${idx + 1}](${src})`));
@@ -660,14 +726,14 @@ async function getDirHandle() {
   return handle;
 }
 
-function slugify(text) {
+function slugify(text, maxLen = 60) {
   return (text || 'untitled')
     .toLowerCase()
-    .replace(/[^\w\s-]/g, '')
+    .replace(/[^\p{L}\p{N}\s-]/gu, '') // Keep unicode letters & numbers (CJK, etc.)
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 80) || 'untitled';
+    .slice(0, maxLen) || 'untitled';
 }
 
 function dateString(date = new Date()) {
@@ -767,13 +833,21 @@ async function downloadImagesToFolder(dirHandle, folderName, imageUrls) {
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const buffer = await resp.arrayBuffer();
 
-      // Derive extension from URL path, default to jpg
+      // Derive extension from Content-Type header, fallback to URL path
       let ext = 'jpg';
-      try {
-        const urlPath = new URL(remoteUrl).pathname;
-        const parts = urlPath.split('.');
-        if (parts.length > 1) ext = parts.pop().split('?')[0].toLowerCase() || 'jpg';
-      } catch { /* use default */ }
+      const imgContentType = (resp.headers.get('content-type') || '').split(';')[0].trim();
+      if (imgContentType.startsWith('image/')) {
+        const ctExt = imgContentType.split('/')[1];
+        if (ctExt === 'jpeg') ext = 'jpg';
+        else if (ctExt === 'svg+xml') ext = 'svg';
+        else if (ctExt) ext = ctExt;
+      } else {
+        try {
+          const urlPath = new URL(remoteUrl).pathname;
+          const parts = urlPath.split('.');
+          if (parts.length > 1) ext = parts.pop().split('?')[0].toLowerCase() || 'jpg';
+        } catch { /* use default */ }
+      }
 
       const imgFilename = `${String(i + 1).padStart(2, '0')}.${ext}`;
       const fh = await subDir.getFileHandle(imgFilename, { create: true });
@@ -793,25 +867,41 @@ async function downloadImagesToFolder(dirHandle, folderName, imageUrls) {
 function buildFrontmatter(fields) {
   const lines = ['---'];
   for (const [k, v] of Object.entries(fields)) {
-    const val = typeof v === 'string' ? `"${v.replace(/"/g, '\\"')}"` : v;
-    lines.push(`${k}: ${val}`);
+    if (typeof v === 'string') {
+      const escaped = v
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '');
+      lines.push(`${k}: "${escaped}"`);
+    } else {
+      lines.push(`${k}: ${v}`);
+    }
   }
   lines.push('---', '');
   return lines.join('\n');
 }
 
+function escapeMarkdownHeading(text) {
+  // Escape chars that could create unintended markdown formatting in a heading line
+  return (text || '').replace(/([\\`*_{}[\]()#+\-.!|~>])/g, '\\$&');
+}
+
 function buildArticleMarkdown({ title, url, savedAt, markdown, includeFrontmatter }) {
+  const cleanTitle = sanitizeTitle(title);
+  const displayUrl = sanitizeUrlForDisplay(url);
   const fm = includeFrontmatter
-    ? buildFrontmatter({ title, url, saved_at: savedAt, source: 'markdown-vault' })
+    ? buildFrontmatter({ title: cleanTitle, url: displayUrl, saved_at: savedAt, source: 'markdown-vault' })
     : '';
-  return `${fm}# ${title}\n\n${markdown}\n`;
+  return `${fm}# ${escapeMarkdownHeading(cleanTitle)}\n\n${markdown}\n`;
 }
 
 function buildErrorMarkdown({ url, error, savedAt, includeFrontmatter }) {
+  const displayUrl = sanitizeUrlForDisplay(url);
   const fm = includeFrontmatter
-    ? buildFrontmatter({ url, saved_at: savedAt, source: 'markdown-vault', status: 'error' })
+    ? buildFrontmatter({ url: displayUrl, saved_at: savedAt, source: 'markdown-vault', status: 'error' })
     : '';
-  return `${fm}# Save Error\n\nFailed to save: ${url}\n\n**Error:** ${error}\n\n**Time:** ${savedAt}\n`;
+  return `${fm}# Save Error\n\nFailed to save: ${displayUrl}\n\n**Error:** ${error}\n\n**Time:** ${savedAt}\n`;
 }
 
 // ─── Recent Saves ─────────────────────────────────────────────────────────────
@@ -977,9 +1067,9 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
 
   try {
     // Step 1: Fetch the page
-    let html, finalUrl;
+    let html, finalUrl, binaryData, contentType;
     try {
-      ({ html, finalUrl } = await fetchURL(url));
+      ({ html, finalUrl, binaryData, contentType } = await fetchURL(url));
     } catch (fetchErr) {
       const isRetryable = fetchErr.retryable;
       const status = fetchErr.status;
@@ -1019,6 +1109,38 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
         title: 'Markdown Vault — Save Failed (all retries)',
         message: `Failed to save ${url} after ${MAX_RETRIES} attempts.\nLast error: ${fetchErr.message}`,
       });
+      return;
+    }
+
+    // Step 1b: If content is a binary file (PDF, image, etc.), save directly
+    if (binaryData) {
+      let ext = 'bin';
+      if (contentType) {
+        const ctParts = contentType.split('/');
+        if (ctParts.length === 2) ext = ctParts[1].split(';')[0].trim();
+        if (ext === 'jpeg') ext = 'jpg';
+        if (ext === 'svg+xml') ext = 'svg';
+      }
+      try {
+        const urlPath = new URL(url).pathname;
+        const urlExt = urlPath.split('.').pop()?.toLowerCase();
+        if (urlExt && urlExt.length <= 5 && /^[a-z0-9]+$/.test(urlExt)) ext = urlExt;
+      } catch { /* use content-type ext */ }
+
+      const basename = slugify(new URL(url).pathname.split('/').pop()?.replace(/\.[^.]+$/, '') || 'download');
+      const filename = `${dateString()}-${basename}.${ext}`;
+      const fh = await getUniqueFileHandle(dirHandle, filename);
+      const writable = await fh.createWritable();
+      await writable.write(binaryData);
+      await writable.close();
+
+      chrome.notifications.create({
+        type: 'basic', iconUrl: 'docs/icon_64.png',
+        title: 'Saved File',
+        message: `Downloaded: ${fh.name}`,
+      });
+      await addRecentSave({ title: fh.name, filename: fh.name, url, saved_at: savedAt });
+      await clearPendingRetry(url);
       return;
     }
 
@@ -1107,7 +1229,7 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
       }
     }
 
-    if (!parsed?.content) {
+    if (!parsed?.content || !parsed.content.trim()) {
       const errorMd = buildErrorMarkdown({
         url, error: 'Could not extract any readable content from this page',
         savedAt, includeFrontmatter: include_frontmatter,
@@ -1117,8 +1239,8 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
       return;
     }
 
-    const title = parsed.title || new URL(url).hostname;
-    const mdFilename = `${dateString()}-${slugify(title)}.md`;
+    const title = sanitizeTitle(parsed.title || new URL(url).hostname);
+    const mdFilename = buildFilename(title, settings.file_naming_pattern);
 
     // Resolve unique file handle first so we know the final name before writing
     const fileHandle = await getUniqueFileHandle(dirHandle, mdFilename);
@@ -1198,6 +1320,12 @@ async function processImageMessage(message, token, date, dirHandle, includeFront
     if (photos && photos.length > 0) {
       fileId = photos[photos.length - 1].file_id;
     } else if (message.document?.mime_type?.startsWith('image/')) {
+      if (message.document.file_size && message.document.file_size > 20 * 1024 * 1024) {
+        const sizeMB = Math.round(message.document.file_size / 1024 / 1024);
+        const entry = `*Image too large to download (${sizeMB}MB — Telegram limit is 20MB)*`;
+        await appendToDaily(dirHandle, entry, date);
+        return;
+      }
       fileId = message.document.file_id;
       mimeExt = message.document.mime_type.split('/')[1] || 'jpg';
     } else {
@@ -1226,6 +1354,51 @@ async function processImageMessage(message, token, date, dirHandle, includeFront
   }
 }
 
+// ─── Document Message Processing ─────────────────────────────────────────────
+async function processDocumentMessage(message, token, date, dirHandle) {
+  try {
+    const doc = message.document;
+    if (!doc?.file_id) return;
+
+    // Check Telegram's 20MB download limit
+    if (doc.file_size && doc.file_size > 20 * 1024 * 1024) {
+      const sizeMB = Math.round(doc.file_size / 1024 / 1024);
+      const entry = `*Received document "${doc.file_name || 'unnamed'}" (${sizeMB}MB) — too large to download (Telegram limit is 20MB)*`;
+      await appendToDaily(dirHandle, entry, date);
+      return;
+    }
+
+    const fileInfo = await getTelegramFileInfo(token, doc.file_id);
+    const fileUrl = `https://api.telegram.org/file/bot${token}/${fileInfo.file_path}`;
+    const resp = await fetch(fileUrl);
+    if (!resp.ok) throw new Error(`Failed to download document: HTTP ${resp.status}`);
+
+    const buffer = await resp.arrayBuffer();
+    const filename = doc.file_name || `${Date.now()}.${(doc.file_name || fileInfo.file_path || '').split('.').pop() || 'bin'}`;
+
+    // Save to date subfolder
+    let dayDir;
+    try {
+      dayDir = await dirHandle.getDirectoryHandle(date, { create: true });
+    } catch {
+      dayDir = dirHandle;
+    }
+
+    const fh = await dayDir.getFileHandle(filename, { create: true });
+    const writable = await fh.createWritable();
+    await writable.write(buffer);
+    await writable.close();
+
+    const caption = message.caption ? `\n\n${message.caption}` : '';
+    const entry = `**Document saved:** [${filename}](./${date}/${filename})${caption}`;
+    await appendToDaily(dirHandle, entry, date);
+  } catch (err) {
+    console.error('[markdown-vault] Document processing error:', err);
+    const entry = `*Failed to save document: ${err.message}*`;
+    await appendToDaily(dirHandle, entry, date);
+  }
+}
+
 // ─── Main Message Dispatcher ──────────────────────────────────────────────────
 async function processUpdate(update, token, settings) {
   const message = update.message;
@@ -1248,6 +1421,12 @@ async function processUpdate(update, token, settings) {
     if (dirHandle) {
       await processImageMessage(message, token, date, dirHandle, include_frontmatter);
     }
+  } else if (message.document) {
+    // Non-image document (PDF, etc.) — save the file directly
+    const dirHandle = await getDirHandle();
+    if (dirHandle) {
+      await processDocumentMessage(message, token, date, dirHandle);
+    }
   } else if (message.text || message.caption) {
     // Plain text — append to daily file
     const text = message.text || message.caption;
@@ -1255,11 +1434,28 @@ async function processUpdate(update, token, settings) {
     if (dirHandle) {
       await processTextMessage(text, date, dirHandle, include_frontmatter);
     }
+  } else if (message.sticker || message.voice || message.video_note || message.video || message.audio || message.location || message.contact) {
+    // Unsupported message types — log to daily file
+    const msgType = message.sticker ? 'sticker' : message.voice ? 'voice message' :
+      message.video_note ? 'video note' : message.video ? 'video' :
+      message.audio ? 'audio' : message.location ? 'location' : 'contact';
+    const dirHandle = await getDirHandle();
+    if (dirHandle) {
+      const timestamp = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      const entry = `**${timestamp}** — *Received ${msgType} (not supported for saving)*`;
+      await appendToDaily(dirHandle, entry, date);
+    }
   }
 }
 
 // ─── Main Poll ────────────────────────────────────────────────────────────────
+let _pollLock = false;
+
 async function poll() {
+  if (_pollLock) return;
+  _pollLock = true;
+  try {
+
   const { bot_token, setup_complete, is_polling_active } = await getStorage([
     'bot_token', 'setup_complete', 'is_polling_active',
   ]);
@@ -1292,8 +1488,9 @@ async function poll() {
       for (const update of updates) {
         await processUpdate(update, bot_token, settings);
         last_update_id = update.update_id + 1;
+        // Save after each message to prevent duplicates on crash
+        await setStorage({ last_update_id });
       }
-      await setStorage({ last_update_id });
     }
 
     // Update last successful poll time
@@ -1308,6 +1505,8 @@ async function poll() {
 
   // Also process any pending retries
   await processPendingRetries();
+
+  } finally { _pollLock = false; }
 }
 
 // ─── Alarm Management ─────────────────────────────────────────────────────────
