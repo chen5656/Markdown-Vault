@@ -182,9 +182,9 @@ function buildFilename(title, pattern, date) {
   const d = date || dateString();
   switch (pattern) {
     case 'slug-YYYY-MM-DD': return `${slug}-${d}.md`;
-    case 'slug':            return `${slug}.md`;
+    case 'slug': return `${slug}.md`;
     case 'YYYY-MM-DD-slug':
-    default:                return `${d}-${slug}.md`;
+    default: return `${d}-${slug}.md`;
   }
 }
 
@@ -422,20 +422,10 @@ async function fetchWithBackgroundTab(url) {
             const probe = await chrome.scripting.executeScript({
               target: { tabId: tab.id },
               func: () => {
-                const hasTweet = !!(
+                return !!(
                   document.querySelector('article[data-testid="tweet"], article[role="article"]') &&
                   document.querySelector('div[data-testid="tweetText"]')
                 );
-                // Also detect X Notes / article pages (/i/article/ URL) or other article content
-                const isArticlePage = /\/i\/article/.test(window.location.pathname);
-                const hasArticle = isArticlePage
-                  ? !!(document.querySelector('main, [role="main"], article, [role="article"]')?.textContent?.trim().length > 300)
-                  : !!(
-                    document.querySelector('div[data-testid="article-text"]') ||
-                    document.querySelector('[data-testid="articleContent"]') ||
-                    (document.querySelector('[data-testid="primaryColumn"]')?.textContent?.trim().length > 500)
-                  );
-                return hasTweet || hasArticle;
               },
             });
             if (probe[0]?.result) { resolve(); return; }
@@ -599,61 +589,7 @@ async function fetchWithBackgroundTab(url) {
       const xPost = xResults[0]?.result || null;
       if (xPost?.content) return xPost;
 
-      // X Notes / Article fallback — for status URLs whose SPA navigates to /i/article/
-      const noteResults = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: () => {
-          const clean = t =>
-            (t || '')
-              .replace(/\u00A0/g, ' ')
-              .replace(/[ \t]+\n/g, '\n')
-              .replace(/\n{3,}/g, '\n\n')
-              .trim();
 
-          const getTitle = () => clean(
-            document.querySelector('meta[property="og:title"]')?.content ||
-            document.querySelector('h1')?.innerText ||
-            document.title.replace(/\s*[\/|]\s*X\s*$/, '').trim() ||
-            ''
-          );
-
-          const isArticlePage = /\/i\/article\//.test(window.location.pathname);
-
-          if (isArticlePage) {
-            // X article reader — try progressively broader selectors
-            const articleSelectors = [
-              '[data-testid="article"]',
-              '[role="article"]',
-              'article',
-              'main',
-              '[role="main"]',
-            ];
-            for (const sel of articleSelectors) {
-              const el = document.querySelector(sel);
-              if (el) {
-                const content = clean(el.innerText || el.textContent || '');
-                if (content.length > 200) return { title: getTitle(), content, markdownReady: true };
-              }
-            }
-            // Last resort: body text minus nav
-            const body = document.body?.innerText || '';
-            const content = clean(body);
-            if (content.length > 300) return { title: getTitle(), content, markdownReady: true };
-          } else {
-            // Still on status page — try X Notes data-testid and primaryColumn
-            for (const sel of ['div[data-testid="article-text"]', '[data-testid="articleContent"]', '[data-testid="primaryColumn"]']) {
-              const el = document.querySelector(sel);
-              if (el) {
-                const content = clean(el.innerText || el.textContent || '');
-                if (content.length > 200) return { title: getTitle(), content, markdownReady: true };
-              }
-            }
-          }
-          return null;
-        },
-      });
-      const noteData = noteResults[0]?.result;
-      if (noteData?.content) return noteData;
     }
 
     // Xiaohongshu (小红书) — JS-rendered; extract note content and CDN images from live DOM
@@ -1658,7 +1594,7 @@ async function processUpdate(update, token, settings) {
     // Unsupported message types — log to daily file
     const msgType = message.sticker ? 'sticker' : message.voice ? 'voice message' :
       message.video_note ? 'video note' : message.video ? 'video' :
-      message.audio ? 'audio' : message.location ? 'location' : 'contact';
+        message.audio ? 'audio' : message.location ? 'location' : 'contact';
     const dirHandle = await getDirHandle();
     if (dirHandle) {
       const timestamp = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
@@ -1676,55 +1612,55 @@ async function poll() {
   _pollLock = true;
   try {
 
-  const { bot_token, setup_complete, is_polling_active } = await getStorage([
-    'bot_token', 'setup_complete', 'is_polling_active',
-  ]);
+    const { bot_token, setup_complete, is_polling_active } = await getStorage([
+      'bot_token', 'setup_complete', 'is_polling_active',
+    ]);
 
-  if (!setup_complete || !bot_token) return;
-  if (is_polling_active === false) return;
+    if (!setup_complete || !bot_token) return;
+    if (is_polling_active === false) return;
 
-  // Verify the save folder is accessible before hitting Telegram API.
-  // If the folder is missing or permission was revoked, enter broken mode
-  // and skip polling until the user fixes the folder in Settings.
-  const folderHandle = await getDirHandle();
-  if (!folderHandle) {
-    await updateBadge();
-    return;
-  }
-
-  let { last_update_id = 0 } = await getStorage(['last_update_id']);
-
-  try {
-    // Check for extended disconnect first
-    await checkAndHandleDisconnect();
-
-    const updates = await getUpdates(bot_token, last_update_id);
-    const settings = await getSettings();
-
-    // Clear any previous Telegram error
-    await setStorage({ last_telegram_error: null });
-
-    if (updates && updates.length > 0) {
-      for (const update of updates) {
-        await processUpdate(update, bot_token, settings);
-        last_update_id = update.update_id + 1;
-        // Save after each message to prevent duplicates on crash
-        await setStorage({ last_update_id });
-      }
+    // Verify the save folder is accessible before hitting Telegram API.
+    // If the folder is missing or permission was revoked, enter broken mode
+    // and skip polling until the user fixes the folder in Settings.
+    const folderHandle = await getDirHandle();
+    if (!folderHandle) {
+      await updateBadge();
+      return;
     }
 
-    // Update last successful poll time
-    await setStorage({ last_successful_poll: new Date().toISOString() });
-    await updateBadge();
+    let { last_update_id = 0 } = await getStorage(['last_update_id']);
 
-  } catch (err) {
-    console.error('[markdown-vault] Poll error:', err);
-    await setStorage({ last_telegram_error: err.message });
-    await updateBadge();
-  }
+    try {
+      // Check for extended disconnect first
+      await checkAndHandleDisconnect();
 
-  // Also process any pending retries
-  await processPendingRetries();
+      const updates = await getUpdates(bot_token, last_update_id);
+      const settings = await getSettings();
+
+      // Clear any previous Telegram error
+      await setStorage({ last_telegram_error: null });
+
+      if (updates && updates.length > 0) {
+        for (const update of updates) {
+          await processUpdate(update, bot_token, settings);
+          last_update_id = update.update_id + 1;
+          // Save after each message to prevent duplicates on crash
+          await setStorage({ last_update_id });
+        }
+      }
+
+      // Update last successful poll time
+      await setStorage({ last_successful_poll: new Date().toISOString() });
+      await updateBadge();
+
+    } catch (err) {
+      console.error('[markdown-vault] Poll error:', err);
+      await setStorage({ last_telegram_error: err.message });
+      await updateBadge();
+    }
+
+    // Also process any pending retries
+    await processPendingRetries();
 
   } finally { _pollLock = false; }
 }
