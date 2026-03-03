@@ -9,7 +9,8 @@
     "notifications",
     "tabs",
     "scripting",
-    "offscreen"
+    "offscreen",
+    "contextMenus"
   ],
   "host_permissions": [
     "<all_urls>"

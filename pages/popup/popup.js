@@ -52,6 +52,16 @@ function timeAgo(isoString) {
   return `${Math.floor(secs / 86400)}d ago`;
 }
 
+function timeUntil(msTimestamp) {
+  if (!msTimestamp) return '—';
+  const diff = msTimestamp - Date.now();
+  if (diff <= 0) return 'now';
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return `in ${secs}s`;
+  if (secs < 3600) return `in ${Math.floor(secs / 60)}m`;
+  return `in ${Math.floor(secs / 3600)}h`;
+}
+
 function formatRange(start, end) {
   const fmt = dt => new Date(dt).toLocaleString('en-US', {
     month: 'short', day: 'numeric', year: 'numeric',
@@ -110,6 +120,7 @@ function renderState(state) {
 
   // Last poll time (auto-refresh every 10s)
   $('last-poll').textContent = timeAgo(state.last_successful_poll);
+  $('next-poll').textContent = state.is_polling_active === false ? 'Stopped' : timeUntil(state.next_poll_time);
 
   // Pending retries
   $('pending-count').textContent = (state.pending_retries || []).length;
@@ -339,8 +350,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   pasteZone.addEventListener('paste', onPaste);
-  // Also catch paste anywhere in the popup when the main screen is visible
+  // Also catch paste anywhere in the popup when the main screen is visible,
+  // but skip if the event already fired on pasteZone (prevents double-save).
   document.addEventListener('paste', e => {
-    if (!$('main').classList.contains('hidden')) onPaste(e);
+    if (!$('main').classList.contains('hidden') && e.target !== pasteZone) onPaste(e);
   });
 });

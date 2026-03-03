@@ -1,177 +1,164 @@
-# Markdown Vault
+# Markdown Vault — Chrome Extension
 
-A fully decentralized, zero-backend Chrome extension that saves web pages as clean Markdown files. Send any URL to your personal Telegram bot from any device → it gets fetched, extracted, and saved to a local folder on your home computer.
+Chrome Extension (MV3). Polls a Telegram bot for incoming messages and saves URLs as local Markdown files via the File System Access API. Zero backend, no build step.
 
 ## How It Works
 
 ```
-Any device → send URL to your Telegram bot
-                    ↓
-       Telegram's servers (queues up to 24h)
-                    ↓
-   Home PC: Chrome Extension polls every ~5 min
-                    ↓
-   Fetch page → Readability extraction → Markdown
-                    ↓
-         Save .md file to your local folder
-                    ↓
-      Desktop notification: "Saved: <title>"
+Phone/any device → send URL to your Telegram bot
+  → Chrome extension polls Telegram every N minutes (chrome.alarms)
+  → fetches URL → Readability extraction → Markdown
+  → saves .md file to local folder (File System Access API)
+  → desktop notification
 ```
 
-**Non-URL messages** are appended to a daily `YYYY-MM-DD.md` file.
-**Images** are downloaded to a `YYYY-MM-DD/` subfolder and referenced in the daily file.
+Non-URL Telegram messages are appended to a daily `YYYY-MM-DD.md` file. Images from Telegram are downloaded to a `YYYY-MM-DD/` subfolder and referenced in the daily file.
 
-## Philosophy
+## File Structure
 
-- **You own everything** — your bot, your token, your files
-- **No backend** — zero servers, zero databases, zero cloud
-- **Telegram is just a free queue** — not a third-party service with your data
-- **Open source** — MIT licensed, no telemetry, no analytics
-
-## Quick Setup (< 5 minutes)
-
-1. **Install** from Chrome Web Store (or load unpacked from GitHub releases)
-2. **Create a Telegram bot**: Message `@BotFather` → `/newbot` → copy your token
-3. **Paste token** in the extension wizard → click Verify
-4. **Choose a folder** where your `.md` files will be saved
-5. **Done** — send any URL to your bot from your phone
-
-## Features
-
-### Core
-- Saves URLs as clean Markdown with YAML frontmatter
-- Appends non-URL messages to a daily digest file
-- Downloads images and references them in the daily file
-- File naming: `YYYY-MM-DD-page-title-slug.md`
-
-### Reliability
-- Retries failed fetches up to 3 times with exponential backoff (30s → 120s → 300s)
-- Non-retryable errors (404, 403, 401) immediately save an error `.md`
-- Retry state survives service worker sleep cycles
-- Detects extended disconnects (≥ 24h) and shows a warning with exact time range
-
-### Content Extraction
-- Fetches with `credentials: include` — shares your browser's cookie jar for paywalled sites
-- Uses Mozilla Readability.js for article extraction
-- Falls back to a background browser tab for JavaScript-rendered pages
-- Converts to GitHub-Flavored Markdown with Turndown.js
-
-### Extension UI
-- **Popup**: bot status, last poll time, recent saves, interval controls, stop/start
-- **Polling intervals**: 1m, 3m, 5m (default), 30m, 1h
-- **Badge**: green (active), grey (stopped), red (error/disconnect warning)
-- **Settings page**: change token, folder, GFM toggle, frontmatter toggle, file naming pattern
-
-## File Format
-
-**Individual saved pages:**
 ```
-YYYY-MM-DD-page-title-slug.md
+/
+├── background.js           # Service worker. Core logic: polling, URL processing, message handling.
+├── content-router.js       # classifyUrl(url, contentType) → type string
+├── metadata.js             # extractMetadata(html, url) → og:/JSON-LD (regex, no DOM)
+├── vtt-parser.js           # parseVttText(), parseJsonTranscriptText()
+├── youtube-handler.js      # handleYouTube(url, dirHandle, settings)
+├── media-handler.js        # handlePdf(), handleDirectMedia(), handleDirectImage()
+├── rss-handler.js          # handleRss(url, dirHandle, settings, xmlText?)
+├── podcast-handler.js      # handlePodcast(url, html, dirHandle, settings)
+├── manifest.json           # MV3. No "type: module". Classic service worker.
+├── libs/
+│   ├── Readability.js      # Mozilla Readability 0.5.0 (bundled)
+│   ├── turndown.js         # Turndown 7.2.0 (bundled)
+│   └── turndown-plugin-gfm.js
+└── pages/
+    ├── offscreen/
+    │   ├── offscreen.html
+    │   └── offscreen.js    # DOMParser context. Handles parse_html, convert_html, parse_rss messages.
+    ├── popup/
+    │   ├── popup.html
+    │   ├── popup.js
+    │   └── popup.css
+    ├── settings/
+    │   ├── settings.html
+    │   ├── settings.js
+    │   └── settings.css
+    └── onboarding/
+        ├── onboarding.html
+        └── onboarding.js
 ```
 
-Content:
-```markdown
----
-title: "Page Title"
-url: https://original-url.com
-saved_at: 2026-02-27T14:32:00Z
-source: markdown-vault
----
+## Setup (no build step)
 
-# Page Title
+1. Open `chrome://extensions`, enable Developer mode
+2. Click "Load unpacked" → select this folder
+3. Click the extension icon → "Start Setup" → paste Telegram bot token → choose save folder
 
-[Cleaned article body in GitHub-Flavored Markdown]
-```
+## Key Files
 
-**Daily digest** (`YYYY-MM-DD.md`) — for non-URL messages and image references:
-```markdown
-**10:30 AM** — Check this out later
+### background.js
+Main service worker. Loads all handler modules via `importScripts()` at startup (classic SW, not ESM).
 
-![Image](./2026-02-27/1234567890.jpg)
+**Key functions:**
+- `poll()` — calls Telegram `getUpdates`, dispatches each update via `processUpdate()`
+- `processUpdate(update, token, settings)` — routes by message type (URL, photo, document, text)
+- `processURLWithRetry(url, attemptIndex, messageCtx, settings)` — full URL processing pipeline
+- `fetchURL(url)` → `{ html, finalUrl, binaryData, contentType, contentDisposition }`
+- `fetchWithBackgroundTab(url)` — injects Readability into a live tab for JS-rendered pages
+- `getDirHandle()` — returns FileSystemDirectoryHandle from IndexedDB, checks permissions
+- `saveMarkdownFile(dirHandle, filename, content)` — deduplicates filenames with `-2`, `-3` etc.
+- `appendToDaily(dirHandle, content, date)` — appends to YYYY-MM-DD.md
+- `saveImageToFolder(dirHandle, date, filename, arrayBuffer)` — saves to date subfolder
+- `setupContextMenu()` — creates/removes context menu based on `context_menu_enabled` setting
+- `buildFrontmatter(fields)`, `buildFilename(title, pattern, date)`, `slugify(text, maxLen)`
 
-**2:15 PM** — Meeting notes: discussed Q1 roadmap
-```
+**URL processing flow in `processURLWithRetry`:**
+1. Pre-fetch: `classifyUrl(url)` → if `youtube`, call `handleYouTube()` and return
+2. `fetchURL(url)` → returns HTML or binary
+3. Post-fetch: `classifyUrl(effectiveUrl, contentType)` routes:
+   - `rss` → `handleRss()`
+   - `pdf` → `handlePdf()`
+   - `direct-audio/video` → `handleDirectMedia()`
+   - `direct-image` → `handleDirectImage()`
+   - `podcast` → `handlePodcast()`
+   - unknown binary → save to `YYYY-MM-DD/` subfolder + companion `.md` with metadata
+4. HTML: `parseHtmlViaOffscreen()` → Readability + Turndown
+5. If content < 500 chars: `fetchWithBackgroundTab()` fallback (injects Readability into live DOM; if Readability returns null, tries common CSS selectors: `main article`, `article`, `[role="main"]`, etc.)
 
-## Architecture
+### offscreen.js
+Handles `parse_html` (Readability + Turndown), `convert_html` (Turndown only), `parse_rss` (DOMParser for RSS/Atom XML).
 
-| Component | Technology |
-|-----------|-----------|
-| Extension framework | Chrome Extension Manifest V3 |
-| Background scheduling | `chrome.alarms` (wakes every N minutes) |
-| Persistence | `chrome.storage.local` + IndexedDB (for folder handle) |
-| Message relay | Telegram Bot API, long-polling (`getUpdates`) |
-| Article extraction | Mozilla Readability.js |
-| HTML → Markdown | Turndown.js + turndown-plugin-gfm |
-| DOM parsing | Chrome Offscreen Document API |
-| Local file saving | File System Access API |
-| Notifications | Chrome Notifications API |
+### content-router.js
+`classifyUrl(url, contentType?)` returns: `'youtube' | 'rss' | 'pdf' | 'direct-audio' | 'direct-video' | 'direct-image' | 'podcast' | 'html'`
 
-### Why an Offscreen Document?
-
-`DOMParser` is not available in Chrome's service workers (MV3). The extension creates a Chrome [Offscreen Document](https://developer.chrome.com/docs/extensions/reference/offscreen/) to parse HTML using `DOMParser`, run Readability, and convert to Markdown — then passes results back to the service worker.
-
-### Storage Keys (`chrome.storage.local`)
+## Storage Keys (`chrome.storage.local`)
 
 | Key | Type | Description |
 |-----|------|-------------|
 | `bot_token` | string | Telegram bot token |
-| `bot_username` | string | Bot's @username from getMe |
-| `setup_complete` | boolean | Whether onboarding is done |
-| `last_update_id` | number | Telegram offset (prevents re-processing) |
-| `last_successful_poll` | ISO string | Timestamp of last successful API call |
-| `pending_retries` | array | `{ url, attempt, next_retry_at }` |
-| `connection_warnings` | array | Past disconnect events |
-| `recent_saves` | array | Last 20 saved files (for popup display) |
-| `is_polling_active` | boolean | Whether polling alarm is running |
-| `poll_interval` | number | Seconds between polls |
-| `include_frontmatter` | boolean | Add YAML header to files |
-| `use_gfm` | boolean | GitHub-Flavored Markdown mode |
-| `file_naming_pattern` | string | `YYYY-MM-DD-slug` (default) |
+| `bot_username` | string | Bot @username |
+| `setup_complete` | boolean | Onboarding done |
+| `last_update_id` | number | Telegram offset (dedup) |
+| `last_successful_poll` | ISO string | Last successful Telegram API call |
+| `pending_retries` | array | `{ url, attempt, next_retry_at, messageCtx }` |
+| `connection_warnings` | array | Disconnect events `{ id, start, end, duration, acknowledged }` |
+| `recent_saves` | array | Last 20 saves `{ title, filename, url, saved_at }` |
+| `is_polling_active` | boolean | Whether alarm is running |
+| `poll_interval` | number | Seconds between polls (default: 300) |
+| `include_frontmatter` | boolean | YAML header in .md files |
+| `use_gfm` | boolean | GitHub-Flavored Markdown |
+| `file_naming_pattern` | string | `'YYYY-MM-DD-slug'` (default), `'slug-YYYY-MM-DD'`, `'slug'` |
 | `has_disconnect_warning` | boolean | Unacknowledged disconnect exists |
-| `fs_permission_needed` | boolean | Folder access permission revoked |
-| `last_telegram_error` | string | Last Telegram API error message |
+| `fs_permission_needed` | boolean | Folder permission revoked |
+| `folder_status` | string | `'ok'` \| `'missing'` \| `'permission_needed'` \| `'unknown'` |
+| `last_telegram_error` | string \| null | Last Telegram API error |
+| `context_menu_enabled` | boolean | Right-click "Save to Markdown Vault" menu item |
 
-## Edge Cases
+## IndexedDB
 
-| Scenario | Behavior |
-|----------|----------|
-| Fetch timeout or 5xx error | Retry up to 3× with exponential backoff |
-| 404 / 403 / 401 | Immediate failure; saves error `.md` |
-| No extractable article content | Background tab fallback; then raw HTML strip |
-| File name collision | Appends `-2`, `-3`, etc. |
-| FS permission revoked | Badge shows error; popup prompts to re-grant |
-| Invalid/revoked Telegram token | Error badge; popup prompts to re-enter |
-| Offline < 24h | Silent recovery; Telegram queues messages |
-| Offline ≥ 24h | Warning notification with exact time range and duration |
-| Paywalled page (cookie auth) | Fetched with `credentials: include` — uses your browser session |
-| JS-rendered page | Background tab opened, JS executes, content extracted from live DOM |
+Key: `save_dir_handle` — stores the `FileSystemDirectoryHandle` (can't be stored in chrome.storage).
 
-## Out of Scope (v1)
+## Message Types (popup/settings → background)
 
-- iMessage, Slack, or other messaging integrations
-- Full-page capture (article extraction only via Readability)
-- Deduplication of identical URLs
-- Multi-folder routing
-- Semantic search or vector storage
-- Mobile app
-- Any backend, database, or server
+| Type | Payload | Response |
+|------|---------|----------|
+| `get_state` | — | Full state object (no raw token; includes `next_poll_time`) |
+| `poll_now` | — | `{ success }` |
+| `save_url` | `{ url }` | `{ success }` |
+| `save_settings` | `{ settings }` | `{ success }` |
+| `start_polling` | — | `{ success }` |
+| `stop_polling` | — | `{ success }` |
+| `set_interval` | `{ intervalSeconds }` | `{ success }` |
+| `fs_permission_granted` | — | `{ success }` |
+| `verify_token` | `{ token }` | `{ success, username }` or `{ success: false, error }` |
+| `dismiss_warning` | `{ warningId }` | `{ success }` |
+| `clear_history` | — | `{ success }` |
 
-## Development
+## Permissions
 
-Load unpacked in Chrome:
-1. Clone this repo
-2. Open `chrome://extensions`
-3. Enable **Developer mode**
-4. Click **Load unpacked** → select this folder
+```json
+["alarms", "storage", "notifications", "tabs", "scripting", "offscreen", "contextMenus"]
++ host_permissions: ["<all_urls>"]
+```
 
-No build step required. All dependencies are bundled in `libs/`.
+## File Naming
 
-### Dependencies (bundled, no CDN)
+Default: `YYYY-MM-DD-slug.md`
+Binary files (PDF, audio, video, unknown): saved to `YYYY-MM-DD/<filename>` + companion `.md` metadata file at root.
+Telegram images: `YYYY-MM-DD/<date>-<timestamp>.<ext>` in the date subfolder.
 
-- [`@mozilla/readability`](https://github.com/mozilla/readability) 0.5.0 — article extraction
-- [`turndown`](https://github.com/mixmark-io/turndown) 7.2.0 — HTML → Markdown
-- [`turndown-plugin-gfm`](https://github.com/mixmark-io/turndown-plugin-gfm) 1.0.2 — GFM tables & strikethrough
+## Retry Logic
 
-## License
+- Up to 3 retries: 30s → 120s → 300s delays
+- 401/403/404: immediate failure, saves error `.md`
+- State survives service worker restarts (stored in chrome.storage)
 
-MIT
+## Context Menu
+
+Right-click "Save to Markdown Vault" on pages/links. Toggleable via Settings. Recreated on `onInstalled` and `onStartup`.
+
+## Dependencies (bundled, no npm)
+
+- Mozilla Readability.js 0.5.0
+- Turndown 7.2.0
+- turndown-plugin-gfm 1.0.2

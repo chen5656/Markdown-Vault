@@ -124,6 +124,7 @@ async function loadSettings() {
   // Toggles
   $('include-frontmatter').checked = state.include_frontmatter !== false;
   $('use-gfm').checked = state.use_gfm !== false;
+  $('context-menu-enabled').checked = state.context_menu_enabled !== false;
 
   // File naming
   const naming = state.file_naming_pattern || 'YYYY-MM-DD-slug';
@@ -196,6 +197,7 @@ async function saveSettings() {
     // Toggles
     settings.include_frontmatter = $('include-frontmatter').checked;
     settings.use_gfm = $('use-gfm').checked;
+    settings.context_menu_enabled = $('context-menu-enabled').checked;
 
     // File naming
     settings.file_naming_pattern = $('file-naming').value;
@@ -299,6 +301,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         use_gfm: true,
         file_naming_pattern: 'YYYY-MM-DD-slug',
         poll_interval: 300,
+        context_menu_enabled: true,
       },
     });
     await loadSettings();

@@ -73,8 +73,8 @@ These are usable patterns since they're just logic:
 
 ### Goals
 - **Full text content** — not summaries, just raw extracted text
-- **Files downloaded as-is** — binary content saved directly, no processing. -- **notes**: file skip. this extension only save markdown files, and the only exception is image files, which can be saved as-is. - but when skip, it should be add to the daily digest markdown file.
-- **No LLM, no API keys** — for anything that can't be extracted deterministically, URL + title + whatever metadata is available.  --- **update**: add to the daily digest markdown file
+- **Files downloaded as-is** — binary content (PDFs, audio, video, and unknown types) is saved directly to a `YYYY-MM-DD/` date subfolder. A companion `.md` metadata file is always created alongside, recording the file path, URL, content type, and file size. ✅ Implemented.
+- **No LLM, no API keys** — for anything that can't be extracted deterministically, URL + title + whatever metadata is available goes into the companion `.md`.
 - **Broad format coverage** — web pages, PDFs, images, audio/video, YouTube, podcasts, RSS
 
 ### Fallback policy (NO LLM)

@@ -701,7 +701,37 @@ async function fetchWithBackgroundTab(url) {
       },
     });
 
-    return results[0]?.result || null;
+    const readabilityResult = results[0]?.result || null;
+    if (readabilityResult) return readabilityResult;
+
+    // Readability fallback: try common article selectors for JS-heavy sites
+    // (e.g. Next.js/React apps where Readability can't find article structure)
+    const selectorResults = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const candidates = [
+          'main article',
+          'article',
+          '[role="main"] article',
+          '[role="main"]',
+          '.post-content',
+          '.article-content',
+          '.entry-content',
+          '.prose',
+          '.content',
+          'main',
+        ];
+        for (const sel of candidates) {
+          const el = document.querySelector(sel);
+          if (el && el.textContent.trim().length > 200) {
+            return { title: document.title, content: el.innerHTML };
+          }
+        }
+        return null;
+      },
+    });
+
+    return selectorResults[0]?.result || null;
   } finally {
     await chrome.tabs.remove(tab.id).catch(() => { });
   }
@@ -1196,7 +1226,7 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
         return;
       }
 
-      // Unknown binary — generic file save (original behaviour)
+      // Unknown binary — save file to date subfolder + create companion .md
       let ext = 'bin';
       if (contentType) {
         const ctParts = contentType.split('/');
@@ -1210,19 +1240,50 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
         if (urlExt && urlExt.length <= 5 && /^[a-z0-9]+$/.test(urlExt)) ext = urlExt;
       } catch { /* use content-type ext */ }
 
+      const date = dateString();
       const basename = slugify(new URL(url).pathname.split('/').pop()?.replace(/\.[^.]+$/, '') || 'download');
-      const filename = `${dateString()}-${basename}.${ext}`;
-      const fh = await getUniqueFileHandle(dirHandle, filename);
-      const writable = await fh.createWritable();
-      await writable.write(binaryData);
-      await writable.close();
+      const binaryFilename = `${date}-${basename}.${ext}`;
+      const savedPath = await (async () => {
+        let dayDir;
+        try {
+          dayDir = await dirHandle.getDirectoryHandle(date, { create: true });
+        } catch {
+          dayDir = dirHandle;
+        }
+        const fh = await dayDir.getFileHandle(binaryFilename, { create: true });
+        const w = await fh.createWritable();
+        await w.write(binaryData);
+        await w.close();
+        return `${date}/${binaryFilename}`;
+      })();
+
+      // Companion .md with metadata
+      const sizeMB = (binaryData.byteLength / 1024 / 1024).toFixed(2);
+      const fmFields = {
+        title: basename,
+        url: sanitizeUrlForDisplay(url),
+        saved_at: savedAt,
+        source: 'markdown-vault',
+        type: ext,
+        file: `./${savedPath}`,
+        size_mb: sizeMB,
+      };
+      const { include_frontmatter = true, file_naming_pattern } = settings;
+      const fm = include_frontmatter ? buildFrontmatter(fmFields) : '';
+      const mdContent = (
+        `${fm}# ${escapeMarkdownHeading(basename)}\n\n` +
+        `> File saved to \`./${savedPath}\` (${sizeMB} MB)\n\n` +
+        `Source: ${sanitizeUrlForDisplay(url)}\n`
+      );
+      const mdFilename = buildFilename(basename, file_naming_pattern);
+      const savedMdName = await saveMarkdownFile(dirHandle, mdFilename, mdContent);
 
       chrome.notifications.create({
         type: 'basic', iconUrl: 'docs/icon_64.png',
         title: 'Saved File',
-        message: `Downloaded: ${fh.name}`,
+        message: `Downloaded: ${binaryFilename}`,
       });
-      await addRecentSave({ title: fh.name, filename: fh.name, url, saved_at: savedAt });
+      await addRecentSave({ title: basename, filename: savedMdName, url, saved_at: savedAt });
       await clearPendingRetry(url);
       return;
     }
@@ -1432,7 +1493,7 @@ async function processImageMessage(message, token, date, dirHandle, includeFront
 
     const arrayBuffer = await imageResp.arrayBuffer();
     const ext = fileInfo.file_path.split('.').pop() || mimeExt;
-    const imgFilename = `${Date.now()}.${ext}`;
+    const imgFilename = `${date}-${Date.now()}.${ext}`;
 
     const savedPath = await saveImageToFolder(dirHandle, date, imgFilename, arrayBuffer);
 
@@ -1612,7 +1673,30 @@ async function setupAlarm(intervalSeconds) {
   await setStorage({ poll_interval: intervalSeconds });
 }
 
+// ─── Context Menu ─────────────────────────────────────────────────────────────
+async function setupContextMenu() {
+  await chrome.contextMenus.removeAll();
+  const { context_menu_enabled = true } = await getStorage(['context_menu_enabled']);
+  if (!context_menu_enabled) return;
+  chrome.contextMenus.create({
+    id: 'save-to-vault',
+    title: 'Save to Markdown Vault',
+    contexts: ['link', 'page'],
+  });
+}
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  const url = info.linkUrl || info.pageUrl;
+  if (!url || !/^https?:\/\//.test(url)) return;
+  const settings = await getSettings();
+  await processURLWithRetry(url, 0, { manual: true, from: 'context_menu' }, settings);
+});
+
 // ─── Event Listeners ──────────────────────────────────────────────────────────
+chrome.runtime.onStartup.addListener(async () => {
+  await setupContextMenu();
+});
+
 chrome.runtime.onInstalled.addListener(async details => {
   const { setup_complete } = await getStorage(['setup_complete']);
 
@@ -1638,6 +1722,7 @@ chrome.runtime.onInstalled.addListener(async details => {
     fs_permission_needed: false,
     folder_status: 'unknown',
     last_telegram_error: null,
+    context_menu_enabled: true,
   };
 
   // Only set keys that don't exist yet
@@ -1660,6 +1745,7 @@ chrome.runtime.onInstalled.addListener(async details => {
     await getDirHandle();
   }
 
+  await setupContextMenu();
   await updateBadge();
 });
 
@@ -1712,12 +1798,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           'connection_warnings', 'is_polling_active', 'poll_interval',
           'setup_complete', 'has_disconnect_warning', 'fs_permission_needed',
           'folder_status', 'last_telegram_error', 'pending_retries', 'last_update_id',
-          'include_frontmatter', 'use_gfm', 'file_naming_pattern',
+          'include_frontmatter', 'use_gfm', 'file_naming_pattern', 'context_menu_enabled',
         ]);
         // Don't expose raw token — just whether one is set
         const hasToken = !!state.bot_token;
         delete state.bot_token;
-        return { ...state, has_token: hasToken };
+        // Include next scheduled poll time
+        const alarm = await chrome.alarms.get(ALARM_NAME);
+        const next_poll_time = alarm?.scheduledTime || null;
+        return { ...state, has_token: hasToken, next_poll_time };
       }
 
       case 'dismiss_warning': {
@@ -1754,7 +1843,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         if (settings.last_update_id !== undefined) toSave.last_update_id = settings.last_update_id;
         if (settings.setup_complete !== undefined) toSave.setup_complete = settings.setup_complete;
+        if (settings.context_menu_enabled !== undefined) toSave.context_menu_enabled = settings.context_menu_enabled;
         await setStorage(toSave);
+        if (settings.context_menu_enabled !== undefined) await setupContextMenu();
         await updateBadge();
         return { success: true };
       }
