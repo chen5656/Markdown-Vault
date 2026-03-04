@@ -441,12 +441,16 @@ async function fetchWithBackgroundTab(url) {
 
             const bearer = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 
-            // Try fetching TweetResultByRestId first as it can contain the article
-            const tweetUrl = new URL('https://x.com/i/api/graphql/HJ9lpOL-ZlOk5CkCw0JW6Q/TweetResultByRestId');
-            tweetUrl.searchParams.set('variables', JSON.stringify({
-              tweetId: id, withCommunity: false, includePromotedContent: false, withVoice: true
-            }));
-            tweetUrl.searchParams.set('features', JSON.stringify({
+            const apiHeaders = {
+              'authorization': bearer,
+              'x-csrf-token': ct0,
+              'x-twitter-active-user': 'yes',
+              'x-twitter-client-language': 'en',
+              'x-twitter-auth-type': 'OAuth2Session',
+              'accept': 'application/json'
+            };
+
+            const features = {
               "creator_subscriptions_tweet_preview_api_enabled": true,
               "articles_preview_enabled": true,
               "responsive_web_twitter_article_tweet_consumption_enabled": true,
@@ -454,34 +458,164 @@ async function fetchWithBackgroundTab(url) {
               "longform_notetweets_rich_text_read_enabled": true,
               "longform_notetweets_inline_media_enabled": true,
               "responsive_web_graphql_skip_user_profile_image_extensions_enabled": false,
-              "responsive_web_graphql_timeline_navigation_enabled": true
-            }));
+              "responsive_web_graphql_timeline_navigation_enabled": true,
+              "responsive_web_profile_redirect_enabled": true,
+              "rweb_tipjar_consumption_enabled": true,
+              "profile_label_improvements_pcf_label_in_post_enabled": true
+            };
 
-            let res = await fetch(tweetUrl.toString(), {
-              headers: { 'authorization': bearer, 'x-csrf-token': ct0 }
-            });
+            // fieldToggles are critical - they tell the API to include full article content
+            const fieldToggles = {
+              "withArticleRichContentState": true,
+              "withArticlePlainText": true,
+              "withPayments": true,
+              "withAuxiliaryUserLabels": true
+            };
+
+            // Try fetching TweetResultByRestId first as it can contain the article
+            const tweetUrl = new URL('https://x.com/i/api/graphql/HJ9lpOL-ZlOk5CkCw0JW6Q/TweetResultByRestId');
+            tweetUrl.searchParams.set('variables', JSON.stringify({
+              tweetId: id, withCommunity: false, includePromotedContent: false, withVoice: true
+            }));
+            tweetUrl.searchParams.set('features', JSON.stringify(features));
+            tweetUrl.searchParams.set('fieldToggles', JSON.stringify(fieldToggles));
+
+            let res = await fetch(tweetUrl.toString(), { headers: apiHeaders });
+            if (!res.ok) return null;
             let data = await res.json();
 
             let article = null;
             let result = data?.data?.tweetResult?.result || data?.data?.tweet_result?.result || data?.data?.tweet_result;
             if (result?.__typename === 'TweetWithVisibilityResults') result = result.tweet;
-            article = result?.article?.article_results?.result || result?.legacy?.article_results?.result;
 
-            if (!article && isArticlePage) {
-              const articleUrl = new URL('https://x.com/i/api/graphql/id8pHQbQi7eZ6P9mA1th1Q/ArticleEntityResultByRestId');
-              articleUrl.searchParams.set('variables', JSON.stringify({ articleEntityId: id }));
-              articleUrl.searchParams.set('features', JSON.stringify({
-                "profile_label_improvements_pcf_label_in_post_enabled": true,
-                "rweb_tipjar_consumption_enabled": true,
-                "responsive_web_graphql_skip_user_profile_image_extensions_enabled": false,
-                "responsive_web_graphql_timeline_navigation_enabled": true
-              }));
-              res = await fetch(articleUrl.toString(), { headers: { 'authorization': bearer, 'x-csrf-token': ct0 } });
-              data = await res.json();
-              article = data?.data?.article_result_by_rest_id?.result || data?.data?.article_entity_result?.result;
+            // Check all known paths for article data in the tweet result
+            article = result?.article?.article_results?.result
+              || result?.legacy?.article_results?.result
+              || result?.article?.result
+              || result?.legacy?.article?.result
+              || result?.legacy?.article?.article_results?.result
+              || result?.article_results?.result;
+
+            // If article not found directly, try extracting article ID from tweet URLs
+            if (!article) {
+              let articleRestId = null;
+
+              // Check URLs in note_tweet entity_set
+              const noteUrls = result?.note_tweet?.note_tweet_results?.result?.entity_set?.urls || [];
+              for (const u of noteUrls) {
+                const expanded = u.expanded_url || u.url || '';
+                const m = expanded.match(/\/(?:i\/)?article\/(\d+)/);
+                if (m) { articleRestId = m[1]; break; }
+              }
+
+              // Check URLs in legacy entities
+              if (!articleRestId) {
+                const legacyUrls = result?.legacy?.entities?.urls || [];
+                for (const u of legacyUrls) {
+                  const expanded = u.expanded_url || u.url || '';
+                  const m = expanded.match(/\/(?:i\/)?article\/(\d+)/);
+                  if (m) { articleRestId = m[1]; break; }
+                }
+              }
+
+              // Also try article URL from the page itself
+              if (!articleRestId && isArticlePage) {
+                articleRestId = id;
+              }
+
+              // Fetch article by its rest_id via ArticleEntityResultByRestId
+              if (articleRestId) {
+                const articleUrl = new URL('https://x.com/i/api/graphql/id8pHQbQi7eZ6P9mA1th1Q/ArticleEntityResultByRestId');
+                articleUrl.searchParams.set('variables', JSON.stringify({ articleEntityId: articleRestId }));
+                articleUrl.searchParams.set('features', JSON.stringify(features));
+                articleUrl.searchParams.set('fieldToggles', JSON.stringify(fieldToggles));
+                res = await fetch(articleUrl.toString(), { headers: apiHeaders });
+                if (res.ok) {
+                  data = await res.json();
+                  article = data?.data?.article_result_by_rest_id?.result
+                    || data?.data?.article_result_by_rest_id
+                    || data?.data?.article_entity_result?.result;
+                }
+              }
             }
 
-            if (!article) return null;
+            // Check for long-form Note Tweets (X Premium feature, full text in note_tweet_results)
+            if (!article) {
+              const noteTweet = result?.note_tweet?.note_tweet_results?.result;
+              if (noteTweet) {
+                const fullText = noteTweet.text || '';
+                if (!fullText) return null;
+
+                // Extract author info from the tweet result
+                const user = result?.core?.user_results?.result?.legacy || {};
+                const authorName = user.name || '';
+                const authorHandle = user.screen_name || '';
+
+                // Build markdown from richtext tags if available, otherwise use plain text
+                let content = '';
+                const richtext = noteTweet.richtext;
+                if (richtext && richtext.tags && richtext.tags.length > 0) {
+                  // Sort tags by from_index descending so we can insert markers without shifting indices
+                  const sortedTags = [...richtext.tags].sort((a, b) => b.from_index - a.from_index);
+                  const chars = [...fullText]; // spread to handle unicode correctly
+                  for (const tag of sortedTags) {
+                    const from = tag.from_index;
+                    const to = tag.to_index;
+                    const types = Array.isArray(tag.richtext_types) ? tag.richtext_types : [];
+                    if (types.includes('Bold') && types.includes('Italic')) {
+                      chars.splice(to, 0, '***');
+                      chars.splice(from, 0, '***');
+                    } else if (types.includes('Bold')) {
+                      chars.splice(to, 0, '**');
+                      chars.splice(from, 0, '**');
+                    } else if (types.includes('Italic')) {
+                      chars.splice(to, 0, '*');
+                      chars.splice(from, 0, '*');
+                    }
+                  }
+                  content = chars.join('');
+                } else {
+                  content = fullText;
+                }
+
+                // Extract media from legacy entities
+                const legacyMedia = result?.legacy?.extended_entities?.media || result?.legacy?.entities?.media || [];
+                const mediaMarkdown = legacyMedia
+                  .map(m => {
+                    if (m.type === 'video' || m.type === 'animated_gif') {
+                      const variants = m.video_info?.variants || [];
+                      const best = variants.filter(v => v.content_type === 'video/mp4').sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+                      return best ? `[Video](${best.url})` : null;
+                    }
+                    return m.media_url_https ? `![](${m.media_url_https}?name=orig)` : null;
+                  })
+                  .filter(Boolean);
+
+                if (mediaMarkdown.length > 0) {
+                  content += '\n\n' + mediaMarkdown.join('\n');
+                }
+
+                // Build title from first line or author
+                const firstLine = content.split('\n').find(l => l.trim()) || '';
+                const title = firstLine.replace(/[*#>\-]/g, '').trim().substring(0, 100) || `Note by @${authorHandle}`;
+
+                const header = [];
+                if (authorName || authorHandle) {
+                  const who = authorName && authorHandle
+                    ? `${authorName} (@${authorHandle})`
+                    : authorHandle ? `@${authorHandle}` : authorName;
+                  header.push(`**Author:** ${who}`);
+                }
+                header.push('');
+
+                return {
+                  title,
+                  content: header.join('\n') + '\n' + content.trim(),
+                  markdownReady: true
+                };
+              }
+              return null;
+            }
 
             // Found an Article Payload. Format natively.
             const title = typeof article.title === 'string' ? article.title.trim() : '';
@@ -558,13 +692,75 @@ async function fetchWithBackgroundTab(url) {
               markdownReady: true
             };
           } catch (e) {
-            return null; // Fall back to DOM scraping
+            return null;
           }
         }
       });
 
       if (xArticleResults && xArticleResults[0]?.result) {
         return xArticleResults[0].result;
+      }
+
+      // Article DOM fallback: when the page shows an Article view, the content
+      // is rendered in a rich scrollable area, not inside tweet data-testid elements.
+      // Wait a bit for the article content to render, then try to extract it.
+      await new Promise(r => setTimeout(r, 3000));
+
+      const articleDomResults = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          try {
+            // Check if this is an article view (has "Article" header or article-like structure)
+            const allText = document.body.innerText || '';
+            const hasArticleHeader = allText.includes('Article') || document.querySelector('a[aria-label="Back"]');
+
+            if (!hasArticleHeader) return null;
+
+            // Try to get all the rich text content from the main area
+            const mainContent = document.querySelector('main') || document.body;
+
+            // Find all text blocks that are part of the article body
+            // Article body text lives in divs with dir="auto" inside the main scroll area
+            const candidateBlocks = Array.from(mainContent.querySelectorAll('div[dir="auto"], span[dir="auto"]'));
+
+            // Filter to substantial text blocks (not UI chrome like "Article", "Post", etc.)
+            const textBlocks = [];
+            const seen = new Set();
+            for (const el of candidateBlocks) {
+              const text = (el.innerText || el.textContent || '').trim();
+              if (text.length < 10) continue; // Skip short UI elements
+              if (seen.has(text)) continue;
+              // Skip if it's inside a navigation or header element
+              if (el.closest('nav, header, [role="banner"]')) continue;
+              // Skip if it's a username/handle
+              if (/^@\w+$/.test(text)) continue;
+              seen.add(text);
+              textBlocks.push(text);
+            }
+
+            if (textBlocks.length === 0) return null;
+
+            // The first substantial block is often the title
+            const title = textBlocks[0].length <= 200 ? textBlocks[0] : textBlocks[0].substring(0, 100);
+            const content = textBlocks.join('\n\n');
+
+            // Only return if we got substantial content (more than just a preview)
+            if (content.length < 200) return null;
+
+            return {
+              title: title,
+              content: content.trim(),
+              markdownReady: true
+            };
+          } catch (e) {
+            console.error('[markdown-vault] Article DOM extraction error:', e);
+            return null;
+          }
+        }
+      });
+
+      if (articleDomResults && articleDomResults[0]?.result) {
+        return articleDomResults[0].result;
       }
 
       // Poll DOM until tweet content appears (X.com loads asynchronously after 'complete')
