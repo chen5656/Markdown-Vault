@@ -1,8 +1,6 @@
 // Markdown Vault — HTML Metadata Extraction
 // Regex-based og:, twitter:, JSON-LD extraction — no DOM required, runs in service worker.
 
-'use strict';
-
 function decodeHtmlEntities(str) {
   return (str || '')
     .replace(/&amp;/g, '&')
@@ -15,15 +13,12 @@ function decodeHtmlEntities(str) {
     .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)));
 }
 
-// Parse all <meta> tags into a flat map of { property/name → content }
 function parseMetaTags(html) {
   const tags = {};
-  // Match opening/self-closing meta tags (handles multiline attributes)
   const metaRe = /<meta\s([^>]*?)(?:\s*\/?)>/gis;
   let m;
   while ((m = metaRe.exec(html)) !== null) {
     const attrs = m[1];
-    // Extract property or name attribute (first wins)
     const propM = /(?:^|\s)(?:property|name)\s*=\s*["']([^"']+)["']/i.exec(attrs);
     const contentM = /(?:^|\s)content\s*=\s*["']([^"']*?)["']/i.exec(attrs);
     if (propM && contentM) {
@@ -41,7 +36,6 @@ function getPageTitle(html) {
   return m ? decodeHtmlEntities(m[1].replace(/\s+/g, ' ').trim()) : null;
 }
 
-// Recursively collect JSON-LD candidates with @type + name/description
 function collectJsonLdCandidates(data, out) {
   if (!data) return;
   if (Array.isArray(data)) {
@@ -94,7 +88,7 @@ function extractJsonLd(html) {
  * Extract og:, twitter:, JSON-LD, and <title> metadata from raw HTML.
  * Returns { title, description, siteName, imageUrl, author, published, type }
  */
-function extractMetadata(html, url) {
+export function extractMetadata(html, url) {
   if (!html) return { title: null, description: null, siteName: null, imageUrl: null, author: null, published: null, type: null };
 
   const meta   = parseMetaTags(html);

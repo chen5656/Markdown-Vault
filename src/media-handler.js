@@ -2,7 +2,11 @@
 // Handles PDF, direct audio/video URLs, and standalone image URLs.
 // Downloads binary files to date subfolders and creates companion Markdown stubs.
 
-'use strict';
+import {
+  dateString, slugify, sanitizeTitle, buildFilename, buildFrontmatter,
+  escapeMarkdownHeading, saveMarkdownFile, saveImageToFolder, appendToDaily,
+} from './shared.js';
+import { extractMetadata } from './metadata.js';
 
 const PDF_MAX_SIZE   = 50  * 1024 * 1024; // 50 MB
 const MEDIA_MAX_SIZE = 200 * 1024 * 1024; // 200 MB
@@ -21,7 +25,6 @@ function getFilenameFromUrl(url) {
 
 function getFilenameFromContentDisposition(header) {
   if (!header) return null;
-  // Handles both filename= and filename*=UTF-8''...
   const m = /filename\*?=(?:UTF-8'')?["']?([^"';\r\n]+)/i.exec(header);
   return m ? decodeURIComponent(m[1].trim()).replace(/^["']|["']$/g, '') : null;
 }
@@ -31,7 +34,7 @@ async function saveBinaryToDateFolder(dirHandle, date, filename, arrayBuffer) {
   try {
     dayDir = await dirHandle.getDirectoryHandle(date, { create: true });
   } catch {
-    dayDir = dirHandle; // fallback to root
+    dayDir = dirHandle;
   }
   const fh = await dayDir.getFileHandle(filename, { create: true });
   const writable = await fh.createWritable();
@@ -42,7 +45,7 @@ async function saveBinaryToDateFolder(dirHandle, date, filename, arrayBuffer) {
 
 // ─── PDF Handler ──────────────────────────────────────────────────────────────
 
-async function handlePdf(url, dirHandle, settings, fetchResult) {
+export async function handlePdf(url, dirHandle, settings, fetchResult) {
   const { include_frontmatter = true } = settings;
   const savedAt = new Date().toISOString();
   const date    = dateString();
@@ -54,7 +57,6 @@ async function handlePdf(url, dirHandle, settings, fetchResult) {
     throw new Error(`PDF too large to save (${sizeMB} MB — limit is ${PDF_MAX_SIZE / 1024 / 1024} MB)`);
   }
 
-  // Try to get title from HTML redirect page metadata, then fall back to filename
   let title = null;
   if (html) {
     const meta = extractMetadata(html, url);
@@ -93,7 +95,7 @@ async function handlePdf(url, dirHandle, settings, fetchResult) {
 
 // ─── Direct Audio / Video Handler ────────────────────────────────────────────
 
-async function handleDirectMedia(url, dirHandle, settings, fetchResult, mediaKind) {
+export async function handleDirectMedia(url, dirHandle, settings, fetchResult, mediaKind) {
   const { include_frontmatter = true } = settings;
   const savedAt = new Date().toISOString();
   const date    = dateString();
@@ -105,7 +107,6 @@ async function handleDirectMedia(url, dirHandle, settings, fetchResult, mediaKin
     throw new Error(`${mediaKind} file too large (${sizeMB} MB — limit is ${MEDIA_MAX_SIZE / 1024 / 1024} MB)`);
   }
 
-  // Determine file extension
   const rawFilename = getFilenameFromContentDisposition(contentDisposition) || getFilenameFromUrl(url);
   let ext = '';
   if (rawFilename) {
@@ -154,7 +155,7 @@ async function handleDirectMedia(url, dirHandle, settings, fetchResult, mediaKin
 
 // ─── Image URL Handler ────────────────────────────────────────────────────────
 
-async function handleDirectImage(url, dirHandle, settings, fetchResult) {
+export async function handleDirectImage(url, dirHandle, settings, fetchResult) {
   const { binaryData, contentType } = fetchResult;
   const date    = dateString();
 
@@ -166,7 +167,6 @@ async function handleDirectImage(url, dirHandle, settings, fetchResult) {
     return { title: 'Image', filename: `${date}.md` };
   }
 
-  // Determine extension
   let ext = 'jpg';
   if (contentType) {
     const ct = contentType.toLowerCase().split(';')[0].trim();

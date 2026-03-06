@@ -2,7 +2,11 @@
 // Fetches YouTube watch pages, extracts caption tracks, builds Markdown transcripts.
 // No API keys, no yt-dlp — uses ytInitialPlayerResponse from page HTML.
 
-'use strict';
+import {
+  sanitizeTitle, buildFilename, buildFrontmatter, escapeMarkdownHeading,
+  saveMarkdownFile,
+} from './shared.js';
+import { extractYouTubeVideoId } from './content-router.js';
 
 const YT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
 const YT_HEADERS = {
@@ -93,12 +97,10 @@ function extractCaptionTracks(playerResponse) {
 function selectBestTrack(tracks) {
   if (!tracks.length) return null;
   const sorted = [...tracks].sort((a, b) => {
-    // Manual captions (non-asr) before auto-generated
     const aIsAsr = a.kind === 'asr';
     const bIsAsr = b.kind === 'asr';
     if (aIsAsr && !bIsAsr) return 1;
     if (!aIsAsr && bIsAsr) return -1;
-    // English before other languages
     const aIsEn = a.languageCode === 'en' || a.languageCode.startsWith('en-');
     const bIsEn = b.languageCode === 'en' || b.languageCode.startsWith('en-');
     if (aIsEn && !bIsEn) return -1;
@@ -121,7 +123,6 @@ function decodeXmlEntities(str) {
     .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)));
 }
 
-// YouTube JSON3 caption format: {events: [{segs: [{utf8: '...'}]}]}
 function parseJson3Transcript(text) {
   try {
     const data = JSON.parse(text);
@@ -139,7 +140,6 @@ function parseJson3Transcript(text) {
   } catch { return null; }
 }
 
-// YouTube XML caption format: <text start="..." dur="...">...</text>
 function parseXmlTranscript(text) {
   const pattern = /<text[^>]*>([\s\S]*?)<\/text>/gi;
   const lines = [];
@@ -154,7 +154,6 @@ function parseXmlTranscript(text) {
 async function fetchCaptionTrack(baseUrl) {
   if (!baseUrl) return null;
 
-  // Try JSON3 format first (richer, includes timing)
   let json3Url;
   try {
     const u = new URL(baseUrl);
@@ -174,7 +173,6 @@ async function fetchCaptionTrack(baseUrl) {
     }
   } catch { /* fall through */ }
 
-  // Fallback: plain XML (no fmt= param)
   try {
     const xmlUrl = baseUrl.replace(/[&?]fmt=[^&]+/g, '');
     const resp = await fetch(xmlUrl, { headers: { 'User-Agent': YT_UA, 'Accept-Language': 'en-US,en;q=0.9' } });
@@ -197,8 +195,7 @@ function formatDuration(seconds) {
 
 // ─── Main handler ─────────────────────────────────────────────────────────────
 
-async function handleYouTube(url, dirHandle, settings) {
-  // extractYouTubeVideoId is defined in content-router.js
+export async function handleYouTube(url, dirHandle, settings) {
   const videoId = extractYouTubeVideoId(url);
   if (!videoId) throw new Error('Could not extract YouTube video ID from URL');
 
@@ -207,7 +204,6 @@ async function handleYouTube(url, dirHandle, settings) {
 
   const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-  // Fetch the watch page
   const resp = await fetch(watchUrl, { headers: YT_HEADERS });
   if (!resp.ok) {
     throw Object.assign(
@@ -237,7 +233,6 @@ async function handleYouTube(url, dirHandle, settings) {
     if (transcript) transcriptSource = 'youtube-captions';
   }
 
-  // Build frontmatter
   const fmFields = {
     title:    sanitizeTitle(title),
     url:      watchUrl,
@@ -258,7 +253,6 @@ async function handleYouTube(url, dirHandle, settings) {
   if (durationStr) lines.push(`**Duration:** ${durationStr}`, '');
 
   if (description) {
-    // Limit description to avoid enormous files
     const shortDesc = description.length > 1000 ? description.slice(0, 1000) + '…' : description;
     lines.push('## Description', '', shortDesc, '');
   }

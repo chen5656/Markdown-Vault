@@ -2,15 +2,17 @@
 // Fetches and parses RSS 2.0, Atom, and JSON Feed formats.
 // XML parsing is delegated to the offscreen document (DOMParser not in SW).
 
-'use strict';
+import {
+  sanitizeTitle, buildFilename, buildFrontmatter, escapeMarkdownHeading,
+  saveMarkdownFile,
+} from './shared.js';
 
 const RSS_MAX_ITEMS = 50;
 
-async function handleRss(url, dirHandle, settings, xmlText) {
+export async function handleRss(url, dirHandle, settings, xmlText, offscreenMessage) {
   const { include_frontmatter = true } = settings;
   const savedAt = new Date().toISOString();
 
-  // If xmlText wasn't already fetched (e.g. came back as binary), fetch fresh
   if (!xmlText) {
     const resp = await fetch(url, {
       headers: {
@@ -27,7 +29,6 @@ async function handleRss(url, dirHandle, settings, xmlText) {
     xmlText = await resp.text();
   }
 
-  // Parse via offscreen document (DOMParser for XML)
   let parsed;
   try {
     parsed = await offscreenMessage({ type: 'parse_rss', xml: xmlText, url });
@@ -58,7 +59,6 @@ async function handleRss(url, dirHandle, settings, xmlText) {
     const itemLink  = item.link  || '';
     const itemDate  = item.pubDate ? ` — ${item.pubDate.slice(0, 10)}` : '';
     const rawDesc   = item.description || '';
-    // Strip HTML tags, truncate
     const itemDesc  = rawDesc
       ? '\n  ' + rawDesc.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200)
       : '';

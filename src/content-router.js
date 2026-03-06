@@ -1,8 +1,6 @@
 // Markdown Vault — Content Router
 // Classifies URLs and Content-Types to route to the right handler.
 
-'use strict';
-
 const AUDIO_EXTS = new Set(['mp3', 'm4a', 'wav', 'flac', 'aac', 'ogg', 'opus', 'aiff', 'wma']);
 const VIDEO_EXTS = new Set(['mp4', 'mov', 'm4v', 'mkv', 'webm', 'mpeg', 'mpg', 'avi', 'wmv', 'flv']);
 const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'svg', 'bmp', 'tiff']);
@@ -41,7 +39,7 @@ function isYouTubeVideoUrl(url) {
   } catch { return false; }
 }
 
-function extractYouTubeVideoId(url) {
+export function extractYouTubeVideoId(url) {
   try {
     const u = new URL(url);
     const hostname = u.hostname.toLowerCase();
@@ -84,11 +82,9 @@ function isRssContentType(ct) {
  * Returns: 'youtube' | 'direct-video' | 'direct-audio' | 'direct-image'
  *        | 'pdf' | 'rss' | 'podcast' | 'html'
  */
-function classifyUrl(url, contentType) {
-  // 1. YouTube video URLs
+export function classifyUrl(url, contentType) {
   if (isYouTubeVideoUrl(url)) return 'youtube';
 
-  // 2. URL extension-based detection
   const ext = getUrlExtension(url);
   if (ext) {
     if (AUDIO_EXTS.has(ext))  return 'direct-audio';
@@ -97,7 +93,6 @@ function classifyUrl(url, contentType) {
     if (IMAGE_EXTS.has(ext))  return 'direct-image';
   }
 
-  // 3. Content-Type based (requires fetch result)
   if (contentType) {
     const ct = contentType.toLowerCase().split(';')[0].trim();
     if (ct === 'application/pdf')           return 'pdf';
@@ -107,7 +102,6 @@ function classifyUrl(url, contentType) {
     if (isRssContentType(ct))              return 'rss';
   }
 
-  // 4. Podcast platform detection
   if (isPodcastHost(url)) return 'podcast';
 
   return 'html';

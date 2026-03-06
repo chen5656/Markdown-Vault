@@ -2,9 +2,13 @@
 // Handles podcast platform pages (Apple Podcasts, Spotify, etc.).
 // Tries to find transcripts via Podcasting 2.0 RSS <podcast:transcript> tags.
 
-'use strict';
+import {
+  sanitizeTitle, buildFilename, buildFrontmatter, escapeMarkdownHeading,
+  saveMarkdownFile,
+} from './shared.js';
+import { extractMetadata } from './metadata.js';
+import { parseVttText, parseJsonTranscriptText } from './vtt-parser.js';
 
-// Look for <link rel="alternate" type="application/rss+xml" href="..."> in page HTML
 function findRssLinkInHtml(html, pageUrl) {
   const re = /<link[^>]+type=["']application\/rss\+xml["'][^>]*href=["']([^"']+)["']/gi;
   let m;
@@ -15,7 +19,6 @@ function findRssLinkInHtml(html, pageUrl) {
     }
     return href;
   }
-  // Also try <link href="..." type="application/rss+xml">
   const re2 = /<link[^>]+href=["']([^"']+)["'][^>]+type=["']application\/rss\+xml["']/gi;
   while ((m = re2.exec(html)) !== null) {
     let href = m[1];
@@ -27,28 +30,24 @@ function findRssLinkInHtml(html, pageUrl) {
   return null;
 }
 
-// Find a matching episode in RSS items by URL comparison
 function findMatchingEpisode(items, pageUrl) {
   const normalised = pageUrl.replace(/\/$/, '');
   for (const item of items) {
     if (item.link && item.link.replace(/\/$/, '') === normalised) return item;
   }
-  // Fuzzy: check if enclosure URL basename appears in page URL
   for (const item of items) {
     if (item.enclosureUrl) {
       const base = item.enclosureUrl.split('/').pop()?.split('?')[0] || '';
       if (base && pageUrl.includes(base)) return item;
     }
   }
-  // Fallback: most recent episode
   return items[0] || null;
 }
 
-async function handlePodcast(url, html, dirHandle, settings) {
+export async function handlePodcast(url, html, dirHandle, settings, offscreenMessage) {
   const { include_frontmatter = true } = settings;
   const savedAt = new Date().toISOString();
 
-  // Extract page metadata
   const meta       = extractMetadata(html, url);
   const title      = meta.title || url;
   const showNotes  = meta.description || null;
@@ -56,7 +55,6 @@ async function handlePodcast(url, html, dirHandle, settings) {
   let transcript       = null;
   let transcriptSource = null;
 
-  // Look for RSS feed link in page HTML
   const rssUrl = findRssLinkInHtml(html, url);
   if (rssUrl) {
     try {
@@ -77,7 +75,6 @@ async function handlePodcast(url, html, dirHandle, settings) {
                 transcript = parseJsonTranscriptText(tText);
                 if (transcript) transcriptSource = 'podcasting20-json';
               } else {
-                // VTT, SRT, or plain text
                 transcript = parseVttText(tText);
                 if (transcript) transcriptSource = 'podcasting20-vtt';
               }
@@ -88,7 +85,6 @@ async function handlePodcast(url, html, dirHandle, settings) {
     } catch { /* RSS unavailable */ }
   }
 
-  // Build markdown
   const fmFields = {
     title:    sanitizeTitle(title),
     url:      url,
