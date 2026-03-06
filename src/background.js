@@ -33,16 +33,6 @@ function openDB() {
   });
 }
 
-async function idbSet(key, value) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('kv', 'readwrite');
-    tx.objectStore('kv').put(value, key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = e => reject(e.target.error);
-  });
-}
-
 async function idbGet(key) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -125,18 +115,6 @@ function extractURLsFromMessage(message) {
   return [...new Set(urls)];
 }
 
-function normalizeURL(text) {
-  const t = text.trim();
-  if (/^https?:\/\//i.test(t)) return t;
-  // Accept bare hostnames like x.com/... twitter.com/... etc.
-  if (/^(?:www\.)?(?:x|twitter)\.com\//i.test(t)) return 'https://' + t;
-  return t;
-}
-
-function isURL(text) {
-  return /^https?:\/\/[^\s]+/.test(normalizeURL(text));
-}
-
 function isTwitterHostname(hostname) {
   const host = (hostname || '').toLowerCase().replace(/^www\./, '');
   return host === 'x.com' || host === 'twitter.com' || host.endsWith('.x.com') || host.endsWith('.twitter.com');
@@ -158,11 +136,6 @@ function isTwitterArticleURL(input) {
   } catch {
     return false;
   }
-}
-
-function extractTweetId(url) {
-  const match = url.match(/\/status\/(\d+)/);
-  return match ? match[1] : null;
 }
 
 function isXiaohongshuURL(input) {
@@ -339,16 +312,6 @@ async function fetchWithBackgroundTab(url) {
         return xArticleResults[0].result;
       }
 
-      // Article DOM fallback — runs in page context
-      await new Promise(r => setTimeout(r, 3000));
-      const articleDomResults = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ['x-article-dom-extractor.js'],
-      });
-      if (articleDomResults && articleDomResults[0]?.result) {
-        return articleDomResults[0].result;
-      }
-
       // Poll DOM until tweet content appears (X.com loads asynchronously after 'complete')
       const MAX_POLL_MS = 12000;
       const POLL_INTERVAL_MS = 500;
@@ -469,37 +432,7 @@ async function fetchWithBackgroundTab(url) {
       },
     });
 
-    const readabilityResult = results[0]?.result || null;
-    if (readabilityResult) return readabilityResult;
-
-    // Readability fallback: try common article selectors for JS-heavy sites
-    // (e.g. Next.js/React apps where Readability can't find article structure)
-    const selectorResults = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: () => {
-        const candidates = [
-          'main article',
-          'article',
-          '[role="main"] article',
-          '[role="main"]',
-          '.post-content',
-          '.article-content',
-          '.entry-content',
-          '.prose',
-          '.content',
-          'main',
-        ];
-        for (const sel of candidates) {
-          const el = document.querySelector(sel);
-          if (el && el.textContent.trim().length > 200) {
-            return { title: document.title, content: el.innerHTML };
-          }
-        }
-        return null;
-      },
-    });
-
-    return selectorResults[0]?.result || null;
+    return results[0]?.result || null;
   } finally {
     await chrome.tabs.remove(tab.id).catch(() => { });
   }
@@ -822,7 +755,7 @@ async function processURLWithRetry(url, attemptIndex, settings) {
     return;
   }
 
-  const { bot_token, include_frontmatter = true, use_gfm = true } = settings;
+  const { include_frontmatter = true, use_gfm = true } = settings;
   const savedAt = new Date().toISOString();
 
   try {
@@ -946,19 +879,17 @@ async function processURLWithRetry(url, attemptIndex, settings) {
       const date = dateString();
       const basename = slugify(new URL(url).pathname.split('/').pop()?.replace(/\.[^.]+$/, '') || 'download');
       const binaryFilename = `${date}-${basename}.${ext}`;
-      const savedPath = await (async () => {
-        let dayDir;
-        try {
-          dayDir = await dirHandle.getDirectoryHandle(date, { create: true });
-        } catch {
-          dayDir = dirHandle;
-        }
-        const fh = await dayDir.getFileHandle(binaryFilename, { create: true });
-        const w = await fh.createWritable();
-        await w.write(binaryData);
-        await w.close();
-        return `${date}/${binaryFilename}`;
-      })();
+      let dayDir;
+      try {
+        dayDir = await dirHandle.getDirectoryHandle(date, { create: true });
+      } catch {
+        dayDir = dirHandle;
+      }
+      const fh = await dayDir.getFileHandle(binaryFilename, { create: true });
+      const w = await fh.createWritable();
+      await w.write(binaryData);
+      await w.close();
+      const savedPath = `${date}/${binaryFilename}`;
 
       // Companion .md with metadata
       const sizeMB = (binaryData.byteLength / 1024 / 1024).toFixed(2);
@@ -1147,14 +1078,14 @@ async function processURLWithRetry(url, attemptIndex, settings) {
 }
 
 // ─── Text Message Processing ──────────────────────────────────────────────────
-async function processTextMessage(text, date, dirHandle, includeFrontmatter) {
+async function processTextMessage(text, date, dirHandle) {
   const timestamp = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
   const entry = `**${timestamp}** — ${text}`;
   await appendToDaily(dirHandle, entry, date);
 }
 
 // ─── Image Message Processing ─────────────────────────────────────────────────
-async function processImageMessage(message, token, date, dirHandle, includeFrontmatter) {
+async function processImageMessage(message, token, date, dirHandle) {
   try {
     // Get the largest photo variant
     const photos = message.photo;
@@ -1247,47 +1178,33 @@ async function processUpdate(update, token, settings) {
   const message = update.message;
   if (!message) return;
 
-  const date = dateString();
-  const { include_frontmatter = true } = settings;
-
-  // Detect URLs in message
+  // Detect URLs in message — these get their own dirHandle inside processURLWithRetry
   const urls = extractURLsFromMessage(message);
-
   if (urls.length > 0) {
-    // Process each URL (most messages have 1)
     for (const url of urls) {
       await processURLWithRetry(url, 0, settings);
     }
-  } else if (message.photo || message.document?.mime_type?.startsWith('image/')) {
-    // Image message
-    const dirHandle = await getDirHandle();
-    if (dirHandle) {
-      await processImageMessage(message, token, date, dirHandle, include_frontmatter);
-    }
+    return;
+  }
+
+  // All other message types need the save folder
+  const dirHandle = await getDirHandle();
+  if (!dirHandle) return;
+
+  const date = dateString();
+
+  if (message.photo || message.document?.mime_type?.startsWith('image/')) {
+    await processImageMessage(message, token, date, dirHandle);
   } else if (message.document) {
-    // Non-image document (PDF, etc.) — save the file directly
-    const dirHandle = await getDirHandle();
-    if (dirHandle) {
-      await processDocumentMessage(message, token, date, dirHandle);
-    }
+    await processDocumentMessage(message, token, date, dirHandle);
   } else if (message.text || message.caption) {
-    // Plain text — append to daily file
-    const text = message.text || message.caption;
-    const dirHandle = await getDirHandle();
-    if (dirHandle) {
-      await processTextMessage(text, date, dirHandle, include_frontmatter);
-    }
+    await processTextMessage(message.text || message.caption, date, dirHandle);
   } else if (message.sticker || message.voice || message.video_note || message.video || message.audio || message.location || message.contact) {
-    // Unsupported message types — log to daily file
     const msgType = message.sticker ? 'sticker' : message.voice ? 'voice message' :
       message.video_note ? 'video note' : message.video ? 'video' :
         message.audio ? 'audio' : message.location ? 'location' : 'contact';
-    const dirHandle = await getDirHandle();
-    if (dirHandle) {
-      const timestamp = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-      const entry = `**${timestamp}** — *Received ${msgType} (not supported for saving)*`;
-      await appendToDaily(dirHandle, entry, date);
-    }
+    const timestamp = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    await appendToDaily(dirHandle, `**${timestamp}** — *Received ${msgType} (not supported for saving)*`, date);
   }
 }
 
@@ -1513,11 +1430,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (settings.context_menu_enabled !== undefined) await setupContextMenu();
         await updateBadge();
         return { success: true };
-      }
-
-      case 'request_fs_permission': {
-        // Can't do this from service worker — popup/onboarding must handle it
-        return { error: 'Must be called from popup context' };
       }
 
       case 'fs_permission_granted': {
