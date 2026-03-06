@@ -7,7 +7,7 @@
 const RSS_MAX_ITEMS = 50;
 
 async function handleRss(url, dirHandle, settings, xmlText) {
-  const { include_frontmatter = true, file_naming_pattern } = settings;
+  const { include_frontmatter = true } = settings;
   const savedAt = new Date().toISOString();
 
   // If xmlText wasn't already fetched (e.g. came back as binary), fetch fresh
@@ -41,7 +41,7 @@ async function handleRss(url, dirHandle, settings, xmlText) {
 
   const fmFields = {
     title:      sanitizeTitle(title),
-    url:        sanitizeUrlForDisplay(url),
+    url:        url,
     saved_at:   savedAt,
     source:     'markdown-vault',
     type:       'rss-feed',
@@ -72,7 +72,7 @@ async function handleRss(url, dirHandle, settings, xmlText) {
 
   const content    = fm + lines.join('\n');
   const cleanTitle = sanitizeTitle(title);
-  const filename   = buildFilename(cleanTitle, file_naming_pattern);
+  const filename   = buildFilename(cleanTitle);
   const savedName  = await saveMarkdownFile(dirHandle, filename, content);
 
   return { title: cleanTitle, filename: savedName };

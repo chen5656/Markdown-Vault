@@ -25,20 +25,13 @@ async function idbSet(key, value) {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function $(id) { return document.getElementById(id); }
 
-async function sendMsg(type, extra = {}) {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      return await new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage({ type, ...extra }, resp => {
-          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-          else resolve(resp);
-        });
-      });
-    } catch (e) {
-      if (attempt === 0) { await new Promise(r => setTimeout(r, 300)); continue; }
-      throw e;
-    }
-  }
+function sendMsg(type, extra = {}) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type, ...extra }, resp => {
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else resolve(resp);
+    });
+  });
 }
 
 function timeAgo(isoString) {
@@ -60,14 +53,6 @@ function timeUntil(msTimestamp) {
   if (secs < 60) return `in ${secs}s`;
   if (secs < 3600) return `in ${Math.floor(secs / 60)}m`;
   return `in ${Math.floor(secs / 3600)}h`;
-}
-
-function formatRange(start, end) {
-  const fmt = dt => new Date(dt).toLocaleString('en-US', {
-    month: 'short', day: 'numeric', year: 'numeric',
-    hour: 'numeric', minute: '2-digit', hour12: true,
-  });
-  return `${fmt(start)} — ${fmt(end)}`;
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
@@ -110,7 +95,7 @@ function renderState(state) {
   dot.className = 'status-dot';
   if (!state.is_polling_active) {
     dot.classList.add('grey');
-  } else if (state.last_telegram_error || state.has_disconnect_warning) {
+  } else if (state.last_telegram_error) {
     dot.classList.add('red');
   } else if (state.last_successful_poll) {
     dot.classList.add('green');
@@ -124,23 +109,6 @@ function renderState(state) {
 
   // Pending retries
   $('pending-count').textContent = (state.pending_retries || []).length;
-
-  // Disconnect warning
-  const banner = $('disconnect-banner');
-  const unacked = (state.connection_warnings || []).find(w => !w.acknowledged);
-  if (unacked) {
-    banner.classList.remove('hidden');
-    $('warning-text').textContent =
-      `Offline ${unacked.duration}\n${formatRange(unacked.start, unacked.end)}\n` +
-      `URLs sent during this window may not have been saved.`;
-
-    $('dismiss-warning').onclick = async () => {
-      await sendMsg('dismiss_warning', { warningId: unacked.id });
-      await refresh();
-    };
-  } else {
-    banner.classList.add('hidden');
-  }
 
   // Telegram error
   const errBanner = $('error-banner');
@@ -170,15 +138,6 @@ function renderState(state) {
   // Recent saves
   renderRecentSaves(state.recent_saves || []);
 
-  // Connection history section
-  const history = state.connection_warnings || [];
-  const histSection = $('history-section');
-  if (history.length > 0) {
-    histSection.classList.remove('hidden');
-    renderHistory(history);
-  } else {
-    histSection.classList.add('hidden');
-  }
 }
 
 function renderRecentSaves(saves) {
@@ -195,16 +154,6 @@ function renderRecentSaves(saves) {
         <span>${esc(s.filename)}</span>
         <span>${timeAgo(s.saved_at)}</span>
       </div>
-    </div>
-  `).join('');
-}
-
-function renderHistory(warnings) {
-  const list = $('history-list');
-  list.innerHTML = warnings.slice(0, 5).map(w => `
-    <div class="history-item">
-      <div class="history-duration">Offline for ${esc(w.duration)}</div>
-      <div>${esc(formatRange(w.start, w.end))}</div>
     </div>
   `).join('');
 }

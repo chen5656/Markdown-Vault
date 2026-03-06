@@ -43,7 +43,7 @@ async function saveBinaryToDateFolder(dirHandle, date, filename, arrayBuffer) {
 // ─── PDF Handler ──────────────────────────────────────────────────────────────
 
 async function handlePdf(url, dirHandle, settings, fetchResult) {
-  const { include_frontmatter = true, file_naming_pattern } = settings;
+  const { include_frontmatter = true } = settings;
   const savedAt = new Date().toISOString();
   const date    = dateString();
 
@@ -71,7 +71,7 @@ async function handlePdf(url, dirHandle, settings, fetchResult) {
 
   const fmFields = {
     title:    sanitizeTitle(title),
-    url:      sanitizeUrlForDisplay(url),
+    url:      url,
     saved_at: savedAt,
     source:   'markdown-vault',
     type:     'pdf',
@@ -82,10 +82,10 @@ async function handlePdf(url, dirHandle, settings, fetchResult) {
   const content = (
     `${fm}# ${escapeMarkdownHeading(cleanTitle)}\n\n` +
     `> PDF saved to \`./${savedPath}\`\n\n` +
-    `Source: ${sanitizeUrlForDisplay(url)}\n`
+    `Source: ${url}\n`
   );
 
-  const mdFilename = buildFilename(cleanTitle, file_naming_pattern);
+  const mdFilename = buildFilename(cleanTitle);
   const savedName  = await saveMarkdownFile(dirHandle, mdFilename, content);
 
   return { title: cleanTitle, filename: savedName };
@@ -94,7 +94,7 @@ async function handlePdf(url, dirHandle, settings, fetchResult) {
 // ─── Direct Audio / Video Handler ────────────────────────────────────────────
 
 async function handleDirectMedia(url, dirHandle, settings, fetchResult, mediaKind) {
-  const { include_frontmatter = true, file_naming_pattern } = settings;
+  const { include_frontmatter = true } = settings;
   const savedAt = new Date().toISOString();
   const date    = dateString();
 
@@ -131,7 +131,7 @@ async function handleDirectMedia(url, dirHandle, settings, fetchResult, mediaKin
 
   const fmFields = {
     title:    cleanTitle,
-    url:      sanitizeUrlForDisplay(url),
+    url:      url,
     saved_at: savedAt,
     source:   'markdown-vault',
     type:     mediaKind,
@@ -143,10 +143,10 @@ async function handleDirectMedia(url, dirHandle, settings, fetchResult, mediaKin
     `> ${typeLabel} file saved to \`./${savedPath}\`\n` +
     `>\n` +
     `> No transcript available (no LLM transcription configured).\n\n` +
-    `Source: ${sanitizeUrlForDisplay(url)}\n`
+    `Source: ${url}\n`
   );
 
-  const mdFilename = buildFilename(cleanTitle, file_naming_pattern);
+  const mdFilename = buildFilename(cleanTitle);
   const savedName  = await saveMarkdownFile(dirHandle, mdFilename, content);
 
   return { title: cleanTitle, filename: savedName };
@@ -161,7 +161,7 @@ async function handleDirectImage(url, dirHandle, settings, fetchResult) {
   if (binaryData && binaryData.byteLength > IMAGE_MAX_SIZE) {
     const sizeMB = Math.round(binaryData.byteLength / 1024 / 1024);
     const timestamp = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-    const entry = `**${timestamp}** — Image too large to save (${sizeMB} MB): ${sanitizeUrlForDisplay(url)}`;
+    const entry = `**${timestamp}** — Image too large to save (${sizeMB} MB): ${url}`;
     await appendToDaily(dirHandle, entry, date);
     return { title: 'Image', filename: `${date}.md` };
   }
@@ -186,7 +186,7 @@ async function handleDirectImage(url, dirHandle, settings, fetchResult) {
   const savedPath   = await saveImageToFolder(dirHandle, date, imgFilename, binaryData);
 
   const timestamp = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-  const entry = `**${timestamp}** — Image from URL: ${sanitizeUrlForDisplay(url)}\n\n![Image](./${savedPath})`;
+  const entry = `**${timestamp}** — Image from URL: ${url}\n\n![Image](./${savedPath})`;
   await appendToDaily(dirHandle, entry, date);
 
   return { title: 'Image', filename: `${date}.md` };

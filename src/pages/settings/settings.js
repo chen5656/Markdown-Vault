@@ -35,20 +35,13 @@ async function idbGet(key) {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function $(id) { return document.getElementById(id); }
 
-async function sendMsg(type, extra = {}) {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      return await new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage({ type, ...extra }, resp => {
-          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-          else resolve(resp);
-        });
-      });
-    } catch (e) {
-      if (attempt === 0) { await new Promise(r => setTimeout(r, 300)); continue; }
-      throw e;
-    }
-  }
+function sendMsg(type, extra = {}) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type, ...extra }, resp => {
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else resolve(resp);
+    });
+  });
 }
 
 function showToast(msg = '✓ Saved') {
@@ -62,13 +55,6 @@ function setTokenStatus(msg, type = '') {
   const el = $('token-status');
   el.textContent = msg;
   el.className = `field-status ${type}`;
-}
-
-function formatDateTime(iso) {
-  return new Date(iso).toLocaleString('en-US', {
-    month: 'short', day: 'numeric', year: 'numeric',
-    hour: 'numeric', minute: '2-digit', hour12: true,
-  });
 }
 
 // ─── Load State ───────────────────────────────────────────────────────────────
@@ -126,13 +112,6 @@ async function loadSettings() {
   $('use-gfm').checked = state.use_gfm !== false;
   $('context-menu-enabled').checked = state.context_menu_enabled !== false;
 
-  // File naming
-  const naming = state.file_naming_pattern || 'YYYY-MM-DD-slug';
-  $('file-naming').value = naming;
-
-  // Connection history
-  renderHistory(state.connection_warnings || []);
-
   // Scroll to #folder anchor if needed
   if (window.location.hash === '#folder') {
     setTimeout(() => {
@@ -140,31 +119,6 @@ async function loadSettings() {
       if (el) el.scrollIntoView({ behavior: 'smooth' });
     }, 300);
   }
-}
-
-// ─── Render History ───────────────────────────────────────────────────────────
-function renderHistory(warnings) {
-  const list = $('history-list');
-  if (!warnings.length) {
-    list.innerHTML = '<div class="empty-state">No disconnects recorded</div>';
-    return;
-  }
-
-  list.innerHTML = warnings.map(w => `
-    <div class="history-item">
-      <div class="history-duration">Offline for ${esc(w.duration)}</div>
-      <div>${esc(formatDateTime(w.start))} — ${esc(formatDateTime(w.end))}</div>
-      ${w.acknowledged ? '<div style="color:#9ca3af;font-size:11px">Acknowledged</div>' : ''}
-    </div>
-  `).join('');
-}
-
-function esc(str) {
-  return String(str || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 // ─── Save Settings ────────────────────────────────────────────────────────────
@@ -198,9 +152,6 @@ async function saveSettings() {
     settings.include_frontmatter = $('include-frontmatter').checked;
     settings.use_gfm = $('use-gfm').checked;
     settings.context_menu_enabled = $('context-menu-enabled').checked;
-
-    // File naming
-    settings.file_naming_pattern = $('file-naming').value;
 
     await sendMsg('save_settings', { settings });
     showToast('✓ Settings saved');
@@ -299,21 +250,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       settings: {
         include_frontmatter: true,
         use_gfm: true,
-        file_naming_pattern: 'YYYY-MM-DD-slug',
         poll_interval: 300,
         context_menu_enabled: true,
       },
     });
     await loadSettings();
     showToast('✓ Reset to defaults');
-  });
-
-  // Clear history
-  $('clear-history-btn').addEventListener('click', async () => {
-    if (!confirm('Clear all connection history?')) return;
-    await sendMsg('clear_history');
-    renderHistory([]);
-    showToast('✓ History cleared');
   });
 
   // Reset setup (danger zone)

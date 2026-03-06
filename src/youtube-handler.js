@@ -203,7 +203,7 @@ async function handleYouTube(url, dirHandle, settings) {
   if (!videoId) throw new Error('Could not extract YouTube video ID from URL');
 
   const savedAt = new Date().toISOString();
-  const { include_frontmatter = true, file_naming_pattern } = settings;
+  const { include_frontmatter = true } = settings;
 
   const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
@@ -240,7 +240,7 @@ async function handleYouTube(url, dirHandle, settings) {
   // Build frontmatter
   const fmFields = {
     title:    sanitizeTitle(title),
-    url:      sanitizeUrlForDisplay(watchUrl),
+    url:      watchUrl,
     saved_at: savedAt,
     source:   'markdown-vault',
     type:     'youtube',
@@ -269,11 +269,11 @@ async function handleYouTube(url, dirHandle, settings) {
     lines.push('> No transcript available for this video.', '');
   }
 
-  lines.push(`Source: ${sanitizeUrlForDisplay(watchUrl)}`);
+  lines.push(`Source: ${watchUrl}`);
 
   const content    = fm + lines.join('\n');
   const cleanTitle = sanitizeTitle(title);
-  const filename   = buildFilename(cleanTitle, file_naming_pattern);
+  const filename   = buildFilename(cleanTitle);
   const savedName  = await saveMarkdownFile(dirHandle, filename, content);
 
   return { title: cleanTitle, filename: savedName };

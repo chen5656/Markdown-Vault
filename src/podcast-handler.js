@@ -45,7 +45,7 @@ function findMatchingEpisode(items, pageUrl) {
 }
 
 async function handlePodcast(url, html, dirHandle, settings) {
-  const { include_frontmatter = true, file_naming_pattern } = settings;
+  const { include_frontmatter = true } = settings;
   const savedAt = new Date().toISOString();
 
   // Extract page metadata
@@ -91,7 +91,7 @@ async function handlePodcast(url, html, dirHandle, settings) {
   // Build markdown
   const fmFields = {
     title:    sanitizeTitle(title),
-    url:      sanitizeUrlForDisplay(url),
+    url:      url,
     saved_at: savedAt,
     source:   'markdown-vault',
     type:     'podcast',
@@ -108,11 +108,11 @@ async function handlePodcast(url, html, dirHandle, settings) {
   } else {
     lines.push('> No transcript available for this episode.', '');
   }
-  lines.push(`Source: ${sanitizeUrlForDisplay(url)}`);
+  lines.push(`Source: ${url}`);
 
   const content    = fm + lines.join('\n');
   const cleanTitle = sanitizeTitle(title);
-  const filename   = buildFilename(cleanTitle, file_naming_pattern);
+  const filename   = buildFilename(cleanTitle);
   const savedName  = await saveMarkdownFile(dirHandle, filename, content);
 
   return { title: cleanTitle, filename: savedName };

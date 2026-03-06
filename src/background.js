@@ -20,7 +20,6 @@ const ALARM_NAME = 'markdown-vault-poll';
 const DEFAULT_POLL_INTERVAL = 300; // seconds
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [30, 120, 300]; // seconds between attempts
-const DISCONNECT_THRESHOLD = 24 * 60 * 60 * 1000; // 24h in ms
 const MIN_ARTICLE_LENGTH = 500; // chars; below this, use background tab fallback
 const MAX_PAGE_SIZE = 5 * 1024 * 1024; // 5MB max for text page fetch
 
@@ -176,17 +175,6 @@ function isXiaohongshuURL(input) {
 }
 
 // ─── Sanitization Helpers ────────────────────────────────────────────────────
-function sanitizeUrlForDisplay(url) {
-  try {
-    const u = new URL(url);
-    if (u.username || u.password) {
-      u.username = '***';
-      u.password = '***';
-    }
-    return u.toString();
-  } catch { return url; }
-}
-
 function sanitizeTitle(title) {
   return (title || '')
     .replace(/[\r\n]+/g, ' ')
@@ -194,94 +182,8 @@ function sanitizeTitle(title) {
     .trim();
 }
 
-function buildFilename(title, pattern, date) {
-  const slug = slugify(title);
-  const d = date || dateString();
-  switch (pattern) {
-    case 'slug-YYYY-MM-DD': return `${slug}-${d}.md`;
-    case 'slug': return `${slug}.md`;
-    case 'YYYY-MM-DD-slug':
-    default: return `${d}-${slug}.md`;
-  }
-}
-
-// ─── X/Twitter oEmbed Fallback ───────────────────────────────────────────────
-async function fetchTweetViaOEmbed(url) {
-  try {
-    const oembedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(url)}&omit_script=true`;
-    const resp = await fetch(oembedUrl);
-    if (!resp.ok) return null;
-
-    const data = await resp.json();
-    if (!data.html) return null;
-
-    // Parse the embed HTML to extract text content
-    // oEmbed returns HTML like: <blockquote class="twitter-tweet"><p>tweet text</p>&mdash; Author (@handle) ...
-    const htmlContent = data.html;
-
-    // Extract text from the blockquote
-    const textMatch = htmlContent.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
-    const tweetText = textMatch
-      ? textMatch[1]
-        .replace(/<br\s*\/?>/gi, '\n')
-        .replace(/<a[^>]*href="([^"]*)"[^>]*>[^<]*<\/a>/gi, '$1')
-        .replace(/<[^>]+>/g, '')
-        .replace(/&mdash;/g, '—')
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .trim()
-      : '';
-
-    const authorName = data.author_name || '';
-    const authorUrl = data.author_url || '';
-    const authorHandle = authorUrl ? authorUrl.split('/').pop() : '';
-
-    const lines = [];
-    if (authorName || authorHandle) {
-      const who = authorName && authorHandle
-        ? `${authorName} (@${authorHandle})`
-        : authorHandle ? `@${authorHandle}` : authorName;
-      lines.push(`**Author:** ${who}`);
-    }
-    lines.push(`**Post URL:** ${url}`);
-    lines.push('');
-
-    if (tweetText) {
-      lines.push(tweetText);
-      lines.push('');
-    }
-
-    // Extract any links from the tweet text
-    const linkMatches = [...(tweetText.matchAll(/https?:\/\/[^\s]+/g) || [])];
-    const links = linkMatches
-      .map(m => m[0])
-      .filter(l => {
-        try {
-          const host = new URL(l).hostname.toLowerCase().replace(/^www\./, '');
-          return !(host === 'x.com' || host === 'twitter.com' || host === 't.co');
-        } catch { return false; }
-      });
-    if (links.length) {
-      lines.push('## Links');
-      lines.push('');
-      for (const link of links) lines.push(`- ${link}`);
-      lines.push('');
-    }
-
-    lines.push('*Note: Images may not be available via oEmbed. Visit the original post to view media.*');
-
-    const content = lines.join('\n').trim();
-    const displayAuthor = authorHandle ? `@${authorHandle}` : authorName || 'X';
-    const preview = tweetText ? tweetText.slice(0, 72) : '';
-    const title = preview ? `${displayAuthor}: ${preview}` : `${displayAuthor} on X`;
-
-    return { title, content, markdownReady: true };
-  } catch (e) {
-    console.warn('[markdown-vault] oEmbed fallback failed:', e);
-    return null;
-  }
+function buildFilename(title, date) {
+  return `${date || dateString()}-${slugify(title)}.md`;
 }
 
 // ─── Offscreen Document ───────────────────────────────────────────────────────
@@ -673,8 +575,6 @@ async function getUniqueFileHandle(dirHandle, filename) {
     // File doesn't exist — use original name
     return dirHandle.getFileHandle(filename, { create: true });
   }
-
-  return dirHandle.getFileHandle(`${base}-${Date.now()}${ext}`, { create: true });
 }
 
 async function writeFile(fileHandle, content) {
@@ -802,19 +702,17 @@ function escapeMarkdownHeading(text) {
 
 function buildArticleMarkdown({ title, url, savedAt, markdown, includeFrontmatter }) {
   const cleanTitle = sanitizeTitle(title);
-  const displayUrl = sanitizeUrlForDisplay(url);
   const fm = includeFrontmatter
-    ? buildFrontmatter({ title: cleanTitle, url: displayUrl, saved_at: savedAt, source: 'markdown-vault' })
+    ? buildFrontmatter({ title: cleanTitle, url, saved_at: savedAt, source: 'markdown-vault' })
     : '';
   return `${fm}# ${escapeMarkdownHeading(cleanTitle)}\n\n${markdown}\n`;
 }
 
 function buildErrorMarkdown({ url, error, savedAt, includeFrontmatter }) {
-  const displayUrl = sanitizeUrlForDisplay(url);
   const fm = includeFrontmatter
-    ? buildFrontmatter({ url: displayUrl, saved_at: savedAt, source: 'markdown-vault', status: 'error' })
+    ? buildFrontmatter({ url, saved_at: savedAt, source: 'markdown-vault', status: 'error' })
     : '';
-  return `${fm}# Save Error\n\nFailed to save: ${displayUrl}\n\n**Error:** ${error}\n\n**Time:** ${savedAt}\n`;
+  return `${fm}# Save Error\n\nFailed to save: ${url}\n\n**Error:** ${error}\n\n**Time:** ${savedAt}\n`;
 }
 
 // ─── Recent Saves ─────────────────────────────────────────────────────────────
@@ -825,75 +723,15 @@ async function addRecentSave(info) {
   await setStorage({ recent_saves });
 }
 
-// ─── Connection Warnings ──────────────────────────────────────────────────────
-async function checkAndHandleDisconnect() {
-  const { last_successful_poll } = await getStorage(['last_successful_poll']);
-  if (!last_successful_poll) return;
-
-  const lastPoll = new Date(last_successful_poll).getTime();
-  const now = Date.now();
-  const gap = now - lastPoll;
-
-  if (gap >= DISCONNECT_THRESHOLD) {
-    const startDt = new Date(last_successful_poll);
-    const endDt = new Date();
-    const durationMs = gap;
-
-    const hours = Math.floor(durationMs / 3600000);
-    const minutes = Math.floor((durationMs % 3600000) / 60000);
-    const days = Math.floor(hours / 24);
-    const remHours = hours % 24;
-
-    let durationStr;
-    if (days > 0) {
-      durationStr = `${days} day${days > 1 ? 's' : ''} ${remHours} hour${remHours !== 1 ? 's' : ''} ${minutes} minute${minutes !== 1 ? 's' : ''}`;
-    } else {
-      durationStr = `${hours} hour${hours !== 1 ? 's' : ''} ${minutes} minute${minutes !== 1 ? 's' : ''}`;
-    }
-
-    const warning = {
-      id: Date.now(),
-      start: startDt.toISOString(),
-      end: endDt.toISOString(),
-      duration: durationStr,
-      acknowledged: false,
-    };
-
-    const { connection_warnings = [] } = await getStorage(['connection_warnings']);
-    connection_warnings.unshift(warning);
-    if (connection_warnings.length > 50) connection_warnings.length = 50;
-    await setStorage({ connection_warnings, has_disconnect_warning: true });
-
-    // Chrome notification
-    chrome.notifications.create(`disconnect-${warning.id}`, {
-      type: 'basic',
-      iconUrl: 'docs/icon_64.png',
-      title: '⚠️ Markdown Vault — Disconnected',
-      message: `Offline for ${durationStr}.\nURLs sent during ${formatDateTime(startDt)} — ${formatDateTime(endDt)} may not have been saved.`,
-      priority: 2,
-    });
-
-    await updateBadge();
-  }
-}
-
-function formatDateTime(date) {
-  return date.toLocaleString('en-US', {
-    month: 'short', day: 'numeric', year: 'numeric',
-    hour: 'numeric', minute: '2-digit', hour12: true,
-  });
-}
-
 // ─── Badge Management ─────────────────────────────────────────────────────────
 async function updateBadge() {
   const {
     is_polling_active,
     setup_complete,
-    has_disconnect_warning,
     fs_permission_needed,
     last_telegram_error,
   } = await getStorage([
-    'is_polling_active', 'setup_complete', 'has_disconnect_warning',
+    'is_polling_active', 'setup_complete',
     'fs_permission_needed', 'last_telegram_error',
   ]);
 
@@ -903,7 +741,7 @@ async function updateBadge() {
     return;
   }
 
-  if (fs_permission_needed || last_telegram_error || has_disconnect_warning) {
+  if (fs_permission_needed || last_telegram_error) {
     chrome.action.setBadgeText({ text: '!' });
     chrome.action.setBadgeBackgroundColor({ color: '#E53935' });
     return;
@@ -920,7 +758,7 @@ async function updateBadge() {
 }
 
 // ─── Retry Mechanism ──────────────────────────────────────────────────────────
-async function schedulePendingRetry(url, attempt, messageCtx) {
+async function schedulePendingRetry(url, attempt) {
   const delay = RETRY_DELAYS[attempt] || RETRY_DELAYS[RETRY_DELAYS.length - 1];
   const { pending_retries = [] } = await getStorage(['pending_retries']);
 
@@ -930,7 +768,6 @@ async function schedulePendingRetry(url, attempt, messageCtx) {
     url,
     attempt,
     next_retry_at: Date.now() + delay * 1000,
-    messageCtx,
   });
 
   await setStorage({ pending_retries: filtered });
@@ -950,7 +787,7 @@ async function processPendingRetries() {
   const settings = await getSettings();
 
   for (const retry of due) {
-    await processURLWithRetry(retry.url, retry.attempt, retry.messageCtx, settings);
+    await processURLWithRetry(retry.url, retry.attempt, settings);
   }
 }
 
@@ -962,7 +799,7 @@ async function clearPendingRetry(url) {
 // ─── Settings Helper ──────────────────────────────────────────────────────────
 async function getSettings() {
   return getStorage([
-    'bot_token', 'include_frontmatter', 'use_gfm', 'file_naming_pattern',
+    'bot_token', 'include_frontmatter', 'use_gfm',
     'poll_interval', 'bot_username',
   ]);
 }
@@ -978,7 +815,7 @@ async function notifyAndRecord(title, filename, url, savedAt) {
 }
 
 // ─── URL Processing ───────────────────────────────────────────────────────────
-async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
+async function processURLWithRetry(url, attemptIndex, settings) {
   const dirHandle = await getDirHandle();
   if (!dirHandle) {
     console.warn('[markdown-vault] No directory handle — skipping URL save');
@@ -1026,7 +863,7 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
       // Retryable error
       const nextAttempt = attemptIndex + 1;
       if (nextAttempt < MAX_RETRIES) {
-        await schedulePendingRetry(url, nextAttempt, messageCtx);
+        await schedulePendingRetry(url, nextAttempt);
         return;
       }
 
@@ -1127,21 +964,21 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
       const sizeMB = (binaryData.byteLength / 1024 / 1024).toFixed(2);
       const fmFields = {
         title: basename,
-        url: sanitizeUrlForDisplay(url),
+        url: url,
         saved_at: savedAt,
         source: 'markdown-vault',
         type: ext,
         file: `./${savedPath}`,
         size_mb: sizeMB,
       };
-      const { include_frontmatter = true, file_naming_pattern } = settings;
+      const { include_frontmatter = true } = settings;
       const fm = include_frontmatter ? buildFrontmatter(fmFields) : '';
       const mdContent = (
         `${fm}# ${escapeMarkdownHeading(basename)}\n\n` +
         `> File saved to \`./${savedPath}\` (${sizeMB} MB)\n\n` +
-        `Source: ${sanitizeUrlForDisplay(url)}\n`
+        `Source: ${url}\n`
       );
-      const mdFilename = buildFilename(basename, file_naming_pattern);
+      const mdFilename = buildFilename(basename);
       const savedMdName = await saveMarkdownFile(dirHandle, mdFilename, mdContent);
 
       chrome.notifications.create({
@@ -1235,19 +1072,6 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
       }
     }
 
-    // Last resort for X/Twitter: try oEmbed API
-    if ((!parsed || !parsed.content) && isTwitterStatusURL(url)) {
-      console.log('[markdown-vault] Trying oEmbed fallback for:', url);
-      const oembedResult = await fetchTweetViaOEmbed(url);
-      if (oembedResult?.content) {
-        parsed = {
-          title: oembedResult.title,
-          content: oembedResult.content,
-          success: true,
-        };
-      }
-    }
-
     if (!parsed?.content || !parsed.content.trim()) {
       const errorMd = buildErrorMarkdown({
         url, error: 'Could not extract any readable content from this page',
@@ -1259,7 +1083,7 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
     }
 
     const title = sanitizeTitle(parsed.title || new URL(url).hostname);
-    const mdFilename = buildFilename(title, settings.file_naming_pattern);
+    const mdFilename = buildFilename(title);
 
     // Resolve unique file handle first so we know the final name before writing
     const fileHandle = await getUniqueFileHandle(dirHandle, mdFilename);
@@ -1308,7 +1132,7 @@ async function processURLWithRetry(url, attemptIndex, messageCtx, settings) {
 
     const nextAttempt = attemptIndex + 1;
     if (nextAttempt < MAX_RETRIES && err.retryable !== false) {
-      await schedulePendingRetry(url, nextAttempt, messageCtx);
+      await schedulePendingRetry(url, nextAttempt);
     } else {
       const dirH = await getDirHandle();
       if (dirH) {
@@ -1432,7 +1256,7 @@ async function processUpdate(update, token, settings) {
   if (urls.length > 0) {
     // Process each URL (most messages have 1)
     for (const url of urls) {
-      await processURLWithRetry(url, 0, { message_id: message.message_id, chat_id: message.chat.id }, settings);
+      await processURLWithRetry(url, 0, settings);
     }
   } else if (message.photo || message.document?.mime_type?.startsWith('image/')) {
     // Image message
@@ -1494,9 +1318,6 @@ async function poll() {
     let { last_update_id = 0 } = await getStorage(['last_update_id']);
 
     try {
-      // Check for extended disconnect first
-      await checkAndHandleDisconnect();
-
       const updates = await getUpdates(bot_token, last_update_id);
       const settings = await getSettings();
 
@@ -1512,7 +1333,6 @@ async function poll() {
         }
       }
 
-      // Update last successful poll time
       await setStorage({ last_successful_poll: new Date().toISOString() });
       await updateBadge();
 
@@ -1555,7 +1375,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const url = info.linkUrl || info.pageUrl;
   if (!url || !/^https?:\/\//.test(url)) return;
   const settings = await getSettings();
-  await processURLWithRetry(url, 0, { manual: true, from: 'context_menu' }, settings);
+  await processURLWithRetry(url, 0, settings);
 });
 
 // ─── Event Listeners ──────────────────────────────────────────────────────────
@@ -1579,12 +1399,9 @@ chrome.runtime.onInstalled.addListener(async details => {
     poll_interval: DEFAULT_POLL_INTERVAL,
     include_frontmatter: true,
     use_gfm: true,
-    file_naming_pattern: 'YYYY-MM-DD-slug',
     recent_saves: [],
-    connection_warnings: [],
     pending_retries: [],
     last_update_id: 0,
-    has_disconnect_warning: false,
     fs_permission_needed: false,
     folder_status: 'unknown',
     last_telegram_error: null,
@@ -1661,10 +1478,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'get_state': {
         const state = await getStorage([
           'bot_token', 'bot_username', 'last_successful_poll', 'recent_saves',
-          'connection_warnings', 'is_polling_active', 'poll_interval',
-          'setup_complete', 'has_disconnect_warning', 'fs_permission_needed',
+          'is_polling_active', 'poll_interval',
+          'setup_complete', 'fs_permission_needed',
           'folder_status', 'last_telegram_error', 'pending_retries', 'last_update_id',
-          'include_frontmatter', 'use_gfm', 'file_naming_pattern', 'context_menu_enabled',
+          'include_frontmatter', 'use_gfm', 'context_menu_enabled',
         ]);
         // Don't expose raw token — just whether one is set
         const hasToken = !!state.bot_token;
@@ -1675,23 +1492,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return { ...state, has_token: hasToken, next_poll_time };
       }
 
-      case 'dismiss_warning': {
-        const { connection_warnings = [] } = await getStorage(['connection_warnings']);
-        const updated = connection_warnings.map(w =>
-          w.id === message.warningId ? { ...w, acknowledged: true } : w
-        );
-        const hasUnacked = updated.some(w => !w.acknowledged);
-        await setStorage({ connection_warnings: updated, has_disconnect_warning: hasUnacked });
-        await updateBadge();
-        return { success: true };
-      }
-
-      case 'clear_history': {
-        await setStorage({ connection_warnings: [], has_disconnect_warning: false });
-        await updateBadge();
-        return { success: true };
-      }
-
       case 'save_settings': {
         const { settings } = message;
         const toSave = {};
@@ -1699,7 +1499,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (settings.bot_username !== undefined) toSave.bot_username = settings.bot_username;
         if (settings.include_frontmatter !== undefined) toSave.include_frontmatter = settings.include_frontmatter;
         if (settings.use_gfm !== undefined) toSave.use_gfm = settings.use_gfm;
-        if (settings.file_naming_pattern !== undefined) toSave.file_naming_pattern = settings.file_naming_pattern;
         if (settings.poll_interval !== undefined) {
           toSave.poll_interval = settings.poll_interval;
           const { is_polling_active } = await getStorage(['is_polling_active']);
@@ -1729,7 +1528,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       case 'save_url': {
         const settings = await getSettings();
-        await processURLWithRetry(message.url, 0, { manual: true }, settings);
+        await processURLWithRetry(message.url, 0, settings);
         return { success: true };
       }
 
